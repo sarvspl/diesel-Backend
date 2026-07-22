@@ -30,6 +30,7 @@
     "prisma:seed": "node prisma/seed.js",
     "prisma:studio": "prisma studio",
     "prisma:validate": "prisma validate",
+    "seed:superadmin": "node scripts/seed-superadmin.js",
     "seed:demo": "node scripts/seed-demo.js",
     "seed:operations": "node scripts/seed-operations.js",
     "seed:pricing": "node scripts/seed-pricing.js",
