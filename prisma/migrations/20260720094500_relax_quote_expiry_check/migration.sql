@@ -1,0 +1,20 @@
+-- Correction to 20260720090721_pricing_catalog.
+--
+-- `quotes_expires_after_creation` (CHECK "expires_at" > "created_at") was
+-- wrong, and an integration test caught it.
+--
+-- It confuses a property of the CREATION MOMENT with an invariant over the
+-- row's whole life. A CHECK cannot tell an INSERT from an UPDATE, so it also
+-- forbids ever moving `expires_at` backwards - which is exactly what
+-- force-expiring an outstanding quote is ("that rate was wrong, invalidate
+-- every lock issued against it"). That is a legitimate operation and this
+-- constraint made it impossible.
+--
+-- What it bought in exchange was nothing. `expires_at` is NOT NULL, so the
+-- state that actually matters - an indefinite price lock (BR-604) - is already
+-- unrepresentable. A quote born already-expired is merely a quote nobody can
+-- use, and no code path creates one.
+--
+-- Dropped rather than rewritten: the creation-time rule belongs in the quote
+-- service, where it already lives (`expiresAt = now + QUOTE_TTL_SECONDS`).
+ALTER TABLE "quotes" DROP CONSTRAINT "quotes_expires_after_creation";

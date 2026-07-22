@@ -1,0 +1,1907 @@
+// Diesel for You - Prisma schema
+//
+// PHASE: Identity & Access Foundation.
+// Only the six identity tables exist. No business domain tables are defined:
+// no customer profiles, no corporate accounts, no drivers, no vehicles,
+// no orders, no wallets, no payments. Those reference `users` later.
+//
+// The datasource URL is supplied by `prisma.config.js` from DATABASE_URL.
+//
+// Conventions (docs/08-database-planning.md):
+//   * UUIDv7 primary keys - time-ordered, so index inserts append to the
+//     right-hand edge of the B-tree instead of scattering (ADR-005).
+//   * timestamptz(6) everywhere, stored UTC.
+//   * Models are PascalCase and map to snake_case tables.
+//   * No money or quantity columns in this phase.
+
+generator client {
+  provider               = "prisma-client"
+  output                 = "../generated/prisma"
+  moduleFormat           = "esm"
+  generatedFileExtension = "ts"
+  importFileExtension    = "ts"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+/// The kind of account. Determines which application a user signs into and
+/// which audience their tokens carry.
+///
+/// Customer, driver and admin are SEPARATE ACCOUNTS, not roles on one account
+/// (ADR-016). The same human may legitimately be both a driver and a customer;
+/// modelling that as one account means a compromised driver token can reach
+/// customer data. Uniqueness of phone and email is therefore scoped per
+/// principal (BR-104).
+enum Principal {
+  CUSTOMER
+  DRIVER
+  ADMIN
+}
+
+/// Operational account status. Deliberately SEPARATE from verification state
+/// (ADR-007) - a verified user can later be blocked without losing the record
+/// that their phone or email was ever verified.
+enum UserStatus {
+  ACTIVE
+  BLOCKED
+  DELETED
+}
+
+/// Why a session stopped being usable. Recorded rather than inferred, because
+/// TOKEN_REUSE_DETECTED is a security event that must be distinguishable from
+/// an ordinary logout (BR-123).
+enum SessionRevocationReason {
+  LOGOUT
+  LOGOUT_ALL
+  /// The user revoked a specific other device from their session list.
+  DEVICE_REVOKED
+  TOKEN_REUSE_DETECTED
+  ADMIN_REVOKED
+  PASSWORD_CHANGED
+  ACCOUNT_BLOCKED
+  /// Reached its absolute lifetime; set by the cleanup job.
+  EXPIRED
+}
+
+/// Client platform, for the "your devices" list. Self-reported and never used
+/// for a security decision.
+enum DevicePlatform {
+  ANDROID
+  IOS
+  WEB
+  UNKNOWN
+}
+
+/// What an OTP authorises. Purposes are NOT interchangeable: a code issued to
+/// verify a phone number must never authenticate a login (BR-116).
+enum OtpPurpose {
+  LOGIN
+  SIGNUP
+  PHONE_VERIFICATION
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+  PHONE_CHANGE
+}
+
+// ---------------------------------------------------------------------------
+// Corporate enums
+//
+// THREE ORTHOGONAL AXES (ADR-007, BR-2.1). Never merge them.
+//
+//   verification    "Is this a real company?"     set once by admin review
+//   accountStatus   "May they operate today?"     operational lever
+//   creditFacility  "May they buy on credit?"     commercial lever
+//
+// Merging any pair produces states that cannot be expressed - most importantly
+// an APPROVED company that is later SUSPENDED must not lose the record that it
+// was ever verified, by whom, or on what evidence (BR-213).
+// ---------------------------------------------------------------------------
+
+enum CorporateVerificationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum CorporateAccountStatus {
+  /// Set on approval (BR-208). Before that an account is INACTIVE: it exists
+  /// but may not operate.
+  ACTIVE
+  SUSPENDED
+  INACTIVE
+}
+
+/// Status only. The commercial detail (limits, holds, statements) lives in a
+/// CreditAccount that does not exist yet - docs/05 §3. Present so the third
+/// axis is representable from day one and approving a company can correctly
+/// leave it without credit (BR-230).
+enum CorporateCreditFacilityStatus {
+  NOT_ENABLED
+  ACTIVE
+  SUSPENDED
+  CLOSED
+}
+
+/// Prefixed `CORPORATE_` deliberately. A bare `ADMIN` member role would be
+/// one careless import away from being confused with the platform-wide ADMIN
+/// role in a permission check.
+enum CorporateMemberRole {
+  CORPORATE_OWNER
+  CORPORATE_ADMIN
+  PURCHASE_MANAGER
+  VIEWER
+}
+
+enum CorporateMemberStatus {
+  ACTIVE
+  REMOVED
+}
+
+/// What identifier a company registered with. The exact format is still open
+/// (OQ-01); capturing the TYPE now means answering it later is validation, not
+/// a migration.
+enum CorporateRegistrationIdType {
+  CIN
+  GSTIN
+  PAN
+  UDYAM
+  OTHER
+}
+
+// ---------------------------------------------------------------------------
+// Fleet enums
+// ---------------------------------------------------------------------------
+
+/// Employment lifecycle. Admin-controlled, long-lived.
+///
+/// ORTHOGONAL to `DriverAvailability` (ADR-007, BR-3.1). Merging them produces
+/// unrepresentable states such as a driver who is administratively suspended
+/// but whose app still reports ONLINE.
+enum DriverEmploymentStatus {
+  ACTIVE
+  SUSPENDED
+  INACTIVE
+}
+
+/// Shift availability. Driver-controlled, minute-by-minute.
+///
+/// `AVAILABLE` is deliberately ABSENT: it is derived, not stored - employment
+/// ACTIVE + availability ONLINE + no active assignment + a dispatchable
+/// vehicle. Storing it would create a second source of truth that drifts.
+enum DriverAvailability {
+  OFFLINE
+  ONLINE
+  ON_TRIP
+  BREAK
+}
+
+/// BR-403. Only ACTIVE vehicles are dispatchable.
+///
+/// RETIRED is terminal and is also this table's soft delete: a vehicle is never
+/// removed, because deliveries reference it forever.
+enum VehicleStatus {
+  ACTIVE
+  MAINTENANCE
+  INACTIVE
+  RETIRED
+}
+
+enum ShiftStatus {
+  OPEN
+  CLOSED
+}
+
+/// Every way fuel enters or leaves a tanker.
+///
+/// The set is closed on purpose: a movement that fits none of these is a
+/// movement nobody modelled, and it should fail rather than be silently
+/// recorded as "other".
+enum InventoryAdjustmentType {
+  /// First measurement for a vehicle. Establishes the baseline.
+  OPENING_BALANCE
+  /// Loaded at a depot (BR-410).
+  REFILL
+  /// Operator correction upward - a dip reading found more than the books say.
+  MANUAL_INCREASE
+  /// Operator correction downward - leak, spillage, theft, evaporation.
+  MANUAL_DECREASE
+  /// Dispensed to a customer. Written by the delivery module later, never here.
+  DISPENSED
+}
+
+/// Why a reading was taken. Pairs (opening/closing) are formed by the SHIFT or
+/// the delivery that references them, not by a column on the reading itself.
+enum MeterReadingType {
+  SHIFT_OPENING
+  SHIFT_CLOSING
+  SPOT_CHECK
+  DELIVERY_START
+  DELIVERY_END
+}
+
+/// BR-906. Manual entry requires a photograph; the API enforces it.
+enum MeterReadingSource {
+  MANUAL_ENTRY
+  FLOW_METER_API
+  ESTIMATED
+}
+
+/// BR-409. How the current stock figure was established, and therefore how much
+/// it can be trusted for dispatch.
+enum FuelStockSource {
+  MANUAL
+  REFILL
+  DIP
+  FLOW_METER
+}
+
+// ---------------------------------------------------------------------------
+// Pricing & catalog enums
+// ---------------------------------------------------------------------------
+
+/// Unit of sale. Litres for liquid fuels; kilograms exists because CNG and
+/// some additives are sold by mass.
+enum FuelUnit {
+  LITRE
+  KILOGRAM
+}
+
+enum CatalogStatus {
+  ACTIVE
+  INACTIVE
+}
+
+/// A price version's lifecycle.
+///
+/// Append-only: a price is never edited. Superseding one inserts a new row and
+/// marks the old SUPERSEDED, so yesterday's quote can still be explained at
+/// yesterday's price.
+enum PriceStatus {
+  DRAFT
+  /// Outside the fat-finger sanity band; needs a second administrator (BR-607).
+  PENDING_APPROVAL
+  ACTIVE
+  SUPERSEDED
+  CANCELLED
+}
+
+/// THE tax distinction that makes invoices legal (BR-701 - BR-704).
+///
+/// High-Speed Diesel in India is OUTSIDE GST - it carries central excise plus
+/// state VAT. The delivery charge IS within GST at 18%. One invoice therefore
+/// spans two regimes on different lines, and the regime is an attribute of the
+/// LINE, never of the invoice.
+enum TaxRegime {
+  VAT_EXCISE
+  GST
+  EXEMPT
+}
+
+/// PERCENTAGE covers VAT and GST. PER_UNIT covers central excise, which is a
+/// fixed amount per litre rather than a percentage - a percentage-only model
+/// cannot express it.
+enum TaxCalculationType {
+  PERCENTAGE
+  PER_UNIT
+}
+
+/// Which line a tax rule attaches to. This is what stops GST being applied to
+/// diesel, which would be legally wrong on every invoice.
+enum TaxAppliesTo {
+  FUEL
+  DELIVERY
+}
+
+/// Only FLAT is implemented. The others exist so adding them is data plus a
+/// calculator branch, not a schema migration (BR-608).
+enum DeliveryChargeType {
+  FLAT
+  DISTANCE_BASED
+  ZONE_BASED
+}
+
+enum QuoteStatus {
+  ACTIVE
+  EXPIRED
+  /// Reserved for the ordering module: a quote may be spent exactly once.
+  CONSUMED
+}
+
+// ---------------------------------------------------------------------------
+// Ordering
+// ---------------------------------------------------------------------------
+
+/// THE FULFILMENT AXIS - where the fuel is in its journey (docs/07 §2).
+///
+/// One of THREE independent status enums on an order (ADR-007). Payment and
+/// settlement have their own, because "delivered, invoiced, refund still
+/// processing" is a real state that a single field cannot express without
+/// inventing DELIVERED_PENDING_REFUND and one more for every combination.
+enum OrderStatus {
+  DRAFT
+  PENDING_PAYMENT
+  PAYMENT_FAILED
+  CONFIRMED
+  ALLOCATING
+  ALLOCATION_FAILED
+  ASSIGNED
+  EN_ROUTE
+  ARRIVED
+  DISPENSING
+  /// NOT terminal: fuel has moved, money has not settled.
+  DELIVERED
+  /// Phase 1, not future (ADR-009). Expected on 10-30% of orders.
+  PARTIALLY_DELIVERED
+  DELIVERY_FAILED
+  CANCELLED_BY_CUSTOMER
+  CANCELLED_BY_ADMIN
+  /// Lapsed unpaid (BR-1006). See ADR-027 for why this is not a cancellation.
+  EXPIRED
+  /// Reconciled, invoiced, settled. The only "finished" that means finished.
+  CLOSED
+}
+
+/// THE PAYMENT AXIS (docs/07 §7). Written on creation; Payments owns it later.
+enum PaymentStatus {
+  NOT_REQUIRED
+  PENDING
+  AUTHORIZED
+  CAPTURED
+  SETTLED
+  FAILED
+  PARTIALLY_REFUNDED
+  REFUNDED
+}
+
+/// THE SETTLEMENT AXIS (docs/07 §6): has ordered-versus-delivered been resolved?
+enum SettlementStatus {
+  NOT_REQUIRED
+  PENDING
+  SETTLED
+}
+
+/// Fixed at order creation, never changed (BR-807). Chosen per order, not per
+/// customer (BR-248).
+enum PaymentMode {
+  PREPAID_ONLINE
+  WALLET
+  CASH_ON_DELIVERY
+  CORPORATE_CREDIT
+}
+
+/// Who drove a transition. SYSTEM is not a login (docs/03 §5) - it is how a
+/// sweeper or a webhook appears in the timeline, which it MUST.
+enum ActorKind {
+  CUSTOMER
+  DRIVER
+  ADMIN
+  SYSTEM
+}
+
+/// docs/05 §7 FuelReservation lifecycle.
+enum ReservationStatus {
+  HELD
+  CONSUMED
+  RELEASED
+  EXPIRED
+}
+
+enum IdempotencyState {
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum OutboxStatus {
+  PENDING
+  PROCESSING
+  DONE
+  FAILED
+}
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+/// A platform identity: someone who can authenticate.
+///
+/// Holds ONLY identity information. No customer fields (no cash-on-delivery
+/// cap, no default address), no driver fields (no licence, no vehicle), no
+/// admin fields. Those live in profile tables built in later phases which
+/// reference this one.
+model User {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  principal Principal
+
+  /// E.164, e.g. +919876543210. Primary credential for customers and drivers.
+  phone String? @db.VarChar(20)
+
+  /// Primary credential for administrators. Optional for customers (BR-106).
+  email String? @db.VarChar(255)
+
+  /// Argon2id. NULL for identities that authenticate only by OTP - per BR-101
+  /// no password is required for the customer app. Never logged, never
+  /// returned by any endpoint.
+  passwordHash String? @map("password_hash")
+
+  status UserStatus @default(ACTIVE)
+
+  /// Verification timestamps rather than a status enum: they record WHEN, which
+  /// a boolean or an enum cannot, and they keep verification orthogonal to
+  /// `status` (ADR-007).
+  phoneVerifiedAt DateTime? @map("phone_verified_at") @db.Timestamptz(6)
+  emailVerifiedAt DateTime? @map("email_verified_at") @db.Timestamptz(6)
+
+  /// Consent capture required by the DPDP Act 2023 (BR-107). The version is
+  /// recorded so a later policy change cannot silently rewrite what was agreed.
+  consentVersion String?   @map("consent_version") @db.VarChar(32)
+  consentAt      DateTime? @map("consent_at") @db.Timestamptz(6)
+
+  lastLoginAt DateTime? @map("last_login_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  sessions UserSession[]
+  roles    UserRole[]
+
+  customerProfile    CustomerProfile?
+  addresses          Address[]
+  corporateMemberships CorporateMember[] @relation("CorporateMembership")
+  driverProfile      DriverProfile?
+  driverShifts       DriverShift[]      @relation("ShiftDriver")
+  quotes             Quote[]
+  orders             Order[]
+
+  /// Scoped per principal, not global: the same phone may exist once as a
+  /// customer and once as a driver (BR-104). Erasure under BR-105 tokenises
+  /// the phone and email rather than deleting the row (docs/08 §5.1), which is
+  /// what frees the original value for re-registration.
+  ///
+  /// No `name:` argument - that would rename the CLIENT selector (the key used
+  /// in `where`), not the database constraint. The generated selectors are
+  /// `phone_principal` and `email_principal`, which is what the repository
+  /// queries use. `map:` is the attribute for naming the DB constraint.
+  @@unique([phone, principal])
+  @@unique([email, principal])
+  @@index([status])
+  @@index([createdAt])
+  @@map("users")
+}
+
+/// One authenticated device holding one refresh token.
+///
+/// Multiple concurrent sessions per user are supported and are listable by the
+/// user, so an unrecognised device can be revoked individually.
+model UserSession {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  userId String @map("user_id") @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// SHA-256 of the refresh token. The token itself is NEVER stored (BR-121).
+  /// A database leak must not yield usable credentials.
+  ///
+  /// SHA-256 rather than Argon2 deliberately: the token is 256 bits of server
+  /// generated entropy, not a low-entropy human secret, so it is not
+  /// brute-forceable and does not need a slow KDF. A slow hash here would add
+  /// latency to every refresh for no security gain.
+  refreshTokenHash String @unique @map("refresh_token_hash") @db.VarChar(64)
+
+  /// Incremented on every rotation. Lets the timeline show how many times a
+  /// session has been refreshed without retaining superseded token hashes.
+  rotationCounter Int @default(0) @map("rotation_counter")
+
+  /// Client-supplied, for "your devices". Not trusted for any security decision.
+  deviceId   String?         @map("device_id") @db.VarChar(128)
+  deviceName String?         @map("device_name") @db.VarChar(128)
+  platform   DevicePlatform  @default(UNKNOWN)
+  appVersion String?         @map("app_version") @db.VarChar(32)
+
+  /// Captured SERVER-side from the request, unlike the fields above.
+  userAgent String? @map("user_agent") @db.VarChar(512)
+  ipAddress String? @map("ip_address") @db.VarChar(45)
+
+  /// Marks a device the user has confirmed. Reserved for step-up decisions
+  /// ("skip OTP on a trusted device"); nothing relies on it yet, and it must
+  /// never be settable by the client.
+  isTrusted Boolean @default(false) @map("is_trusted")
+
+  issuedAt DateTime @default(now()) @map("issued_at") @db.Timestamptz(6)
+
+  /// Last time the refresh token was exchanged. NOT last request time: access
+  /// tokens are verified statelessly, so ordinary requests never touch this row.
+  lastUsedAt DateTime @default(now()) @map("last_used_at") @db.Timestamptz(6)
+
+  /// Sliding expiry, extended on every rotation.
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+
+  /// Hard ceiling, fixed at login and NEVER extended.
+  ///
+  /// Without this, rotation renews `expires_at` indefinitely and a session -
+  /// including one held by an attacker who keeps rotating a stolen token -
+  /// never dies. The sliding window keeps active users signed in; this bounds
+  /// how long that can go on.
+  absoluteExpiresAt DateTime @map("absolute_expires_at") @db.Timestamptz(6)
+
+  revokedAt     DateTime?                @map("revoked_at") @db.Timestamptz(6)
+  revokedReason SessionRevocationReason? @map("revoked_reason")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  /// Partial-index territory: the sweeper and "my active sessions" both filter
+  /// on live sessions only, which stay a small fraction of the table as history
+  /// grows (docs/08 §10.1).
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+  @@index([absoluteExpiresAt])
+  @@map("user_sessions")
+}
+
+/// A one-time code issued to a phone or email.
+///
+/// Append-only: a resend creates a NEW row and invalidates the previous one,
+/// rather than updating in place. Two reasons:
+///   * exactly one code is ever valid at a time - updating in place while an
+///     old code remained live would multiply an attacker's guesses;
+///   * rate limiting needs "how many were sent in the last hour", which a
+///     single mutable row cannot answer.
+model OtpChallenge {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  /// Phone in E.164, or email. NOT a foreign key to users: a SIGNUP code is
+  /// issued before any account exists.
+  identifier String @db.VarChar(255)
+
+  /// Scoped like `users` is, so a code for a driver account cannot verify a
+  /// customer one (BR-104, ADR-021).
+  principal Principal
+  purpose   OtpPurpose
+
+  /// Argon2id, exactly like a password. The plaintext is never persisted,
+  /// never logged and never returned outside development (BR-111).
+  codeHash String @map("code_hash")
+
+  attempts    Int @default(0)
+  maxAttempts Int @default(5) @map("max_attempts")
+
+  /// Position in the resend sequence: 0 is the first send. Drives the
+  /// increasing cooldown between resends (BR-113).
+  resendCount Int @default(0) @map("resend_count")
+
+  /// Single-use marker. Set on successful verification, on being superseded by
+  /// a resend, and on attempt exhaustion - so one nullable column answers "is
+  /// this challenge still live?".
+  consumedAt DateTime? @map("consumed_at") @db.Timestamptz(6)
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(6)
+
+  /// For abuse investigation and per-IP limiting (BR-114).
+  ipAddress String? @map("ip_address") @db.VarChar(45)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  /// Serves both the "find the live challenge" lookup and the windowed count
+  /// used for rate limiting.
+  @@index([identifier, principal, purpose, createdAt])
+  @@index([expiresAt])
+  @@map("otp_challenges")
+}
+
+// ---------------------------------------------------------------------------
+// RBAC
+// ---------------------------------------------------------------------------
+
+/// A named bundle of permissions.
+///
+/// Code checks permissions, never role names (ADR-008). Roles are data so a new
+/// role is configuration, not a deployment.
+model Role {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  /// Stable machine identifier, e.g. SUPER_ADMIN. Referenced by seeds.
+  code        String  @unique @db.VarChar(64)
+  name        String  @db.VarChar(128)
+  description String?
+
+  /// System roles are seeded and must not be deleted through the API.
+  isSystem Boolean @default(false) @map("is_system")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  permissions RolePermission[]
+  users       UserRole[]
+
+  @@map("roles")
+}
+
+/// One atomic capability, e.g. `order.cancel`.
+///
+/// Permissions are NOT hardcoded in application logic: middleware receives a
+/// code and checks it against the caller's effective set. Adding a permission
+/// is a seed change.
+model Permission {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  /// `resource.action`, e.g. `session.revoke.any`.
+  code String @unique @db.VarChar(128)
+
+  /// Split out so the admin UI can group permissions without parsing `code`.
+  resource String @db.VarChar(64)
+  action   String @db.VarChar(64)
+
+  description String?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  roles RolePermission[]
+
+  @@index([resource])
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId String @map("role_id") @db.Uuid
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  permissionId String     @map("permission_id") @db.Uuid
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+// ---------------------------------------------------------------------------
+// Customer
+// ---------------------------------------------------------------------------
+
+/// The commercial profile of someone who buys fuel.
+///
+/// Strictly separate from `users`, which holds identity. Nothing here
+/// duplicates a credential: phone, email, status and verification timestamps
+/// stay on `users` and are read from there.
+///
+/// There is deliberately NO `customerKind` / retail-vs-corporate column.
+/// Whether someone is a corporate buyer is derived from their membership of a
+/// CorporateAccount (docs/05 §2). Storing it in both places guarantees the two
+/// will eventually disagree.
+model CustomerProfile {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  userId String @unique @map("user_id") @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  fullName String? @map("full_name") @db.VarChar(120)
+
+  /// BCP 47, e.g. "en", "hi", "bn".
+  preferredLanguage String @default("en") @map("preferred_language") @db.VarChar(12)
+
+  /// Object storage KEY, never bytes (docs/08 §12.4).
+  profileImageKey String? @map("profile_image_key") @db.VarChar(512)
+
+  emergencyContactName  String? @map("emergency_contact_name") @db.VarChar(120)
+  emergencyContactPhone String? @map("emergency_contact_phone") @db.VarChar(20)
+
+  /// Marketing consent. Kept SEPARATE from the transactional channel flags
+  /// below: opting out of marketing must never suppress a delivery alert, and
+  /// the two must not share a setting (BR-1405).
+  marketingOptIn   Boolean   @default(false) @map("marketing_opt_in")
+  marketingOptInAt DateTime? @map("marketing_opt_in_at") @db.Timestamptz(6)
+
+  /// Channel preferences for TRANSACTIONAL messages. There is no "disable all"
+  /// flag by design - delivery-critical notifications fall back to SMS (BR-1403).
+  notifyByPush  Boolean @default(true) @map("notify_by_push")
+  notifyBySms   Boolean @default(true) @map("notify_by_sms")
+  notifyByEmail Boolean @default(false) @map("notify_by_email")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("customer_profiles")
+}
+
+/// A place fuel can be delivered to.
+///
+/// Archived, never hard-deleted: orders will snapshot the address but still
+/// reference it, and a deleted row would orphan delivery history (docs/05 §2).
+model Address {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  userId String @map("user_id") @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// OQ-03 SEAM - currently always null.
+  ///
+  /// Addresses are user-owned per the current instruction. Real corporate
+  /// buyers have shared sites that several members order for, which is an open
+  /// P0 question. This nullable link means answering it is a data change
+  /// rather than a migration of a table that orders reference by then.
+  /// Nothing reads or writes it yet; no API exposes it.
+  corporateAccountId String?           @map("corporate_account_id") @db.Uuid
+  corporateAccount   CorporateAccount? @relation(fields: [corporateAccountId], references: [id], onDelete: SetNull)
+
+  /// User-facing name: "Site 4 - genset yard", "Home".
+  nickname String? @db.VarChar(80)
+
+  line1    String  @db.VarChar(255)
+  line2    String? @db.VarChar(255)
+  landmark String? @db.VarChar(255)
+  city     String  @db.VarChar(120)
+  state    String  @db.VarChar(120)
+  pincode  String  @db.VarChar(12)
+
+  /// Decimal, not float. Coordinates drive dispatch distance and geofence
+  /// deviation; binary floating point introduces drift in exactly the
+  /// comparisons that decide whether a delivery happened where it should.
+  /// Migrates cleanly to a PostGIS geography column later (docs/08 §12.1).
+  latitude  Decimal @db.Decimal(10, 7)
+  longitude Decimal @db.Decimal(10, 7)
+
+  /// From the maps provider, when one exists. Nullable: a pin dropped by hand
+  /// has no place id, and Phase 1 has no maps integration at all.
+  googlePlaceId String? @map("google_place_id") @db.VarChar(255)
+
+  /// "Gate 2, security pass needed." Measurably reduces failed deliveries.
+  deliveryInstructions String? @map("delivery_instructions") @db.VarChar(500)
+
+  /// Site contact, who is often not the account holder.
+  contactName  String? @map("contact_name") @db.VarChar(120)
+  contactPhone String? @map("contact_phone") @db.VarChar(20)
+
+  /// At most one per user among non-archived rows. Enforced transactionally in
+  /// the service - Prisma cannot express a partial unique index, and adding one
+  /// through raw SQL would read as drift on the next `migrate dev`.
+  isDefault Boolean @default(false) @map("is_default")
+
+  /// Cached result of the last serviceability check. Advisory only: the
+  /// authoritative check runs at quote time (BR-504), because zones change.
+  isServiceable   Boolean?  @map("is_serviceable")
+  serviceCheckedAt DateTime? @map("service_checked_at") @db.Timestamptz(6)
+
+  /// Soft delete. Never a hard delete (docs/08 §5).
+  archivedAt DateTime? @map("archived_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  /// Live addresses for one user is the only hot read path.
+  quotes Quote[]
+  orders Order[]
+
+  @@index([userId, archivedAt])
+  @@index([corporateAccountId])
+  @@map("addresses")
+}
+
+// ---------------------------------------------------------------------------
+// Corporate
+// ---------------------------------------------------------------------------
+
+/// A company that buys fuel, distinct from the humans who order for it.
+model CorporateAccount {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  legalName   String @map("legal_name") @db.VarChar(255)
+  displayName String @map("display_name") @db.VarChar(255)
+
+  /// The corporate registration identifier. Format is OQ-01; validated
+  /// loosely for now, with the TYPE recorded so tightening it later needs no
+  /// migration.
+  registrationIdType CorporateRegistrationIdType @map("registration_id_type")
+  registrationNumber String                      @map("registration_number") @db.VarChar(64)
+
+  gstin String? @db.VarChar(15)
+  pan   String? @db.VarChar(10)
+
+  billingLine1   String? @map("billing_line1") @db.VarChar(255)
+  billingLine2   String? @map("billing_line2") @db.VarChar(255)
+  billingCity    String? @map("billing_city") @db.VarChar(120)
+  billingState   String? @map("billing_state") @db.VarChar(120)
+  billingPincode String? @map("billing_pincode") @db.VarChar(12)
+
+  contactEmail String? @map("contact_email") @db.VarChar(255)
+  contactPhone String? @map("contact_phone") @db.VarChar(20)
+
+  // --- Axis 1: is this a real company? ---
+  verificationStatus CorporateVerificationStatus @default(PENDING) @map("verification_status")
+
+  // --- Axis 2: may they operate today? ---
+  /// INACTIVE until approval sets it ACTIVE (BR-208). Suspension changes ONLY
+  /// this column and never touches verificationStatus (BR-213).
+  accountStatus    CorporateAccountStatus @default(INACTIVE) @map("account_status")
+  suspensionReason String?                @map("suspension_reason") @db.VarChar(500)
+
+  // --- Axis 3: may they buy on credit? ---
+  /// Independent of the other two. An APPROVED + ACTIVE company with
+  /// NOT_ENABLED credit is a normal, expected state (BR-230).
+  creditFacilityStatus CorporateCreditFacilityStatus @default(NOT_ENABLED) @map("credit_facility_status")
+
+  /// The user who submitted the registration. Retained for audit even if they
+  /// later leave the company.
+  createdByUserId String @map("created_by_user_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  members             CorporateMember[]
+  verificationRecords CorporateVerificationRecord[]
+  addresses           Address[]
+  orders              Order[]
+
+  /// One company per registration identifier. A rejected company re-applies on
+  /// the SAME account with a new verification record (BR-206), so this does not
+  /// need to allow duplicates.
+  @@unique([registrationIdType, registrationNumber])
+  @@index([verificationStatus, createdAt])
+  @@index([accountStatus])
+  @@map("corporate_accounts")
+}
+
+/// Links a User to a CorporateAccount with a corporate role.
+model CorporateMember {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  corporateAccountId String           @map("corporate_account_id") @db.Uuid
+  corporateAccount   CorporateAccount @relation(fields: [corporateAccountId], references: [id], onDelete: Cascade)
+
+  userId String @map("user_id") @db.Uuid
+  user   User   @relation("CorporateMembership", fields: [userId], references: [id], onDelete: Cascade)
+
+  role CorporateMemberRole
+
+  /// Soft removal. Orders record the placing member, and that attribution must
+  /// survive the person leaving (BR-223). A hard delete would orphan it.
+  status    CorporateMemberStatus @default(ACTIVE)
+  removedAt DateTime?             @map("removed_at") @db.Timestamptz(6)
+
+  addedByUserId   String? @map("added_by_user_id") @db.Uuid
+  removedByUserId String? @map("removed_by_user_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  /// Orders this member placed. They survive the member being removed
+  /// (BR-224), which is why the relation carries no cascade.
+  orders Order[]
+
+  /// One membership row per user per company. Re-adding a removed member
+  /// reactivates this row rather than inserting a second one.
+  @@unique([corporateAccountId, userId])
+  @@index([userId, status])
+  @@index([corporateAccountId, status])
+  @@map("corporate_members")
+}
+
+/// Append-only history of verification decisions.
+///
+/// This entity is WHY verification status survives suspension: the current
+/// status is the latest record and the trail behind it is intact (BR-207).
+/// Never updated, never deleted.
+model CorporateVerificationRecord {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  corporateAccountId String           @map("corporate_account_id") @db.Uuid
+  corporateAccount   CorporateAccount @relation(fields: [corporateAccountId], references: [id], onDelete: Cascade)
+
+  /// Null on the initial submission - there was no prior status.
+  fromStatus CorporateVerificationStatus? @map("from_status")
+  toStatus   CorporateVerificationStatus  @map("to_status")
+
+  /// Machine-readable rejection reason. Required on REJECTED (BR-205).
+  reasonCode String? @map("reason_code") @db.VarChar(64)
+
+  /// Shown to the applicant. Must contain nothing internal.
+  applicantNote String? @map("applicant_note") @db.VarChar(1000)
+
+  /// Internal only. MUST NEVER be returned by a corporate-facing endpoint -
+  /// this is the field most likely to leak an investigator's notes to the
+  /// company being investigated.
+  adminNote String? @map("admin_note") @db.VarChar(2000)
+
+  /// Null for the applicant's own submission; set for an admin decision.
+  reviewedByUserId String? @map("reviewed_by_user_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([corporateAccountId, createdAt])
+  @@map("corporate_verification_records")
+}
+
+// ---------------------------------------------------------------------------
+// Fleet
+// ---------------------------------------------------------------------------
+
+/// The employment record of a delivery driver.
+///
+/// Identity already exists on `users` (principal DRIVER), created by an
+/// administrator (BR-301). Nothing here duplicates a credential: no phone, no
+/// password, no OTP state. This is the BUSINESS profile only.
+model DriverProfile {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  userId String @unique @map("user_id") @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  employeeCode String? @unique @map("employee_code") @db.VarChar(32)
+  fullName     String? @map("full_name") @db.VarChar(120)
+
+  /// BR-303: personal data that must be encrypted at rest.
+  ///
+  /// NOT ENCRYPTED YET - there is no key-management decision, and inventing one
+  /// here would be worse than recording the gap. Redacted from logs, excluded
+  /// from list projections, and tracked as debt. See OQ-27.
+  licenseNumber String?   @map("license_number") @db.VarChar(64)
+  licenseExpiry DateTime? @map("license_expiry") @db.Date
+  /// Object storage key, never bytes (docs/08 §12.4).
+  licenseDocumentKey String? @map("license_document_key") @db.VarChar(512)
+
+  profileImageKey String? @map("profile_image_key") @db.VarChar(512)
+
+  emergencyContactName  String? @map("emergency_contact_name") @db.VarChar(120)
+  emergencyContactPhone String? @map("emergency_contact_phone") @db.VarChar(20)
+
+  joinedOn DateTime? @map("joined_on") @db.Date
+
+  /// Axis 1 - admin-controlled employment.
+  employmentStatus DriverEmploymentStatus @default(ACTIVE) @map("employment_status")
+
+  /// Axis 2 - driver-controlled availability. Independent of axis 1.
+  availability DriverAvailability @default(OFFLINE)
+
+  /// Internal operational notes. Never shown to the driver.
+  notes String? @db.VarChar(2000)
+
+  createdByUserId String?  @map("created_by_user_id") @db.Uuid
+  updatedByUserId String?  @map("updated_by_user_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  assignments VehicleAssignment[]
+  shifts      DriverShift[]
+
+  /// The compliance sweep looks for licences expiring soon (BR-304).
+  @@index([employmentStatus, licenseExpiry])
+  @@map("driver_profiles")
+}
+
+/// A tanker.
+///
+/// Fuel quantity is deliberately NOT here - see VehicleInventory. Nor is the
+/// current driver: that is derived from vehicle_assignments, which keeps one
+/// source of truth and lets a partial unique index enforce "one active
+/// assignment per vehicle".
+model Vehicle {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  /// Fleet-internal identifier, e.g. "TKR-04". Distinct from the legal
+  /// registration and used on operational screens.
+  vehicleNumber String @unique @map("vehicle_number") @db.VarChar(32)
+
+  registrationNumber String @unique @map("registration_number") @db.VarChar(24)
+
+  makeModel        String? @map("make_model") @db.VarChar(120)
+  /// Litres. Decimal, never float (docs/08 §3.4).
+  tankCapacity     Decimal @map("tank_capacity") @db.Decimal(12, 3)
+  compartmentCount Int     @default(1) @map("compartment_count")
+
+  /// Compliance. BR-402: an expired calibration certificate or PESO licence
+  /// EXCLUDES the vehicle from dispatch - dispensing on an uncalibrated meter
+  /// is a Legal Metrology offence, not a policy preference.
+  pesoLicenseNumber     String?   @map("peso_license_number") @db.VarChar(64)
+  pesoLicenseExpiry     DateTime? @map("peso_license_expiry") @db.Date
+  calibrationCertNumber String?   @map("calibration_cert_number") @db.VarChar(64)
+  calibrationExpiry     DateTime? @map("calibration_expiry") @db.Date
+  insuranceExpiry       DateTime? @map("insurance_expiry") @db.Date
+  pucExpiry             DateTime? @map("puc_expiry") @db.Date
+  fitnessExpiry         DateTime? @map("fitness_expiry") @db.Date
+
+  status VehicleStatus @default(ACTIVE)
+
+  /// Soft delete. RETIRED is terminal and the row is never removed, because
+  /// deliveries reference it permanently (docs/08 §5).
+  retiredAt     DateTime? @map("retired_at") @db.Timestamptz(6)
+  retiredReason String?   @map("retired_reason") @db.VarChar(500)
+
+  notes String? @db.VarChar(2000)
+
+  createdByUserId String?  @map("created_by_user_id") @db.Uuid
+  updatedByUserId String?  @map("updated_by_user_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  inventory     VehicleInventory?
+  assignments   VehicleAssignment[]
+  shifts        DriverShift[]
+  meterReadings MeterReading[]
+  adjustments   InventoryAdjustment[]
+  reservations  FuelReservation[]
+
+  @@index([status])
+  @@index([calibrationExpiry])
+  @@index([pesoLicenseExpiry])
+  @@map("vehicles")
+}
+
+/// Current fuel stock for one vehicle.
+///
+/// A SEPARATE TABLE from `vehicles` for one reason: BR-406 requires reserving
+/// fuel to lock this row and re-check `available - held >= required` inside a
+/// transaction. Keeping it narrow means that lock does not block ordinary fleet
+/// administration, and vice versa.
+///
+/// `currentQuantity` is a CACHE over the append-only inventory_adjustments log,
+/// exactly as a wallet balance caches the money ledger (ADR-006). Nothing may
+/// write it directly; every change goes through an adjustment.
+model VehicleInventory {
+  vehicleId String  @id @map("vehicle_id") @db.Uuid
+  vehicle   Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  /// Litres physically in the tank. Derived from the adjustment log.
+  currentQuantity Decimal @default(0) @map("current_quantity") @db.Decimal(12, 3)
+
+  /// Litres promised to orders that have not yet been delivered (BR-405).
+  ///
+  /// The one forward-looking column here: nothing writes it in this phase.
+  /// It exists because it is the whole reason this table is separately
+  /// lockable, and a stock table that cannot express "promised but not yet
+  /// dispensed" cannot serve dispatch at all.
+  heldQuantity Decimal @default(0) @map("held_quantity") @db.Decimal(12, 3)
+
+  /// BR-409: how the figure was established, and when it stops being trusted.
+  lastSource      FuelStockSource @default(MANUAL) @map("last_source")
+  lastVerifiedAt  DateTime?       @map("last_verified_at") @db.Timestamptz(6)
+  staleAfter      DateTime?       @map("stale_after") @db.Timestamptz(6)
+
+  /// Optimistic-concurrency guard for the cached quantity.
+  version BigInt @default(0)
+
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("vehicle_inventory")
+}
+
+/// Append-only log of every fuel movement.
+///
+/// This is the SOURCE OF TRUTH for stock; VehicleInventory.currentQuantity is
+/// a cache derived from it. Rows are never updated or deleted - a mistake is
+/// corrected by posting an opposing adjustment, so the trail shows both the
+/// error and the fix.
+model InventoryAdjustment {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  vehicleId String  @map("vehicle_id") @db.Uuid
+  vehicle   Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  type InventoryAdjustmentType
+
+  /// SIGNED litres: positive adds, negative removes. Signed rather than a
+  /// magnitude plus a direction flag, so the running total is a plain SUM and
+  /// cannot be got wrong by misreading the flag.
+  quantityDelta Decimal @map("quantity_delta") @db.Decimal(12, 3)
+
+  /// Snapshots either side of the movement, for audit without replaying the
+  /// whole log. Written inside the same transaction as the cache update.
+  quantityBefore Decimal @map("quantity_before") @db.Decimal(12, 3)
+  quantityAfter  Decimal @map("quantity_after") @db.Decimal(12, 3)
+
+  /// Mandatory on manual adjustments - enforced by the API and by a CHECK
+  /// constraint. An unexplained stock change is indistinguishable from theft.
+  reasonCode String? @map("reason_code") @db.VarChar(64)
+  reason     String? @db.VarChar(1000)
+
+  // --- Refill detail (BR-410) ---
+  depotName    String?   @map("depot_name") @db.VarChar(160)
+  invoiceRef   String?   @map("invoice_ref") @db.VarChar(64)
+  photoKey     String?   @map("photo_key") @db.VarChar(512)
+  occurredAt   DateTime? @map("occurred_at") @db.Timestamptz(6)
+
+  /// Who did it. Never null: an adjustment with no actor cannot be audited.
+  performedByUserId String @map("performed_by_user_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([vehicleId, createdAt])
+  @@index([type, createdAt])
+  @@map("inventory_adjustments")
+}
+
+/// Which driver is on which vehicle, over time.
+///
+/// Append-only history: unassigning sets `releasedAt` rather than deleting, so
+/// "who was driving on the 14th" stays answerable forever.
+model VehicleAssignment {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  vehicleId String  @map("vehicle_id") @db.Uuid
+  vehicle   Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  driverProfileId String        @map("driver_profile_id") @db.Uuid
+  driverProfile   DriverProfile @relation(fields: [driverProfileId], references: [id], onDelete: Cascade)
+
+  assignedAt      DateTime  @default(now()) @map("assigned_at") @db.Timestamptz(6)
+  assignedByUserId String   @map("assigned_by_user_id") @db.Uuid
+
+  /// Null while active. Partial unique indexes on this column enforce "one
+  /// active assignment per vehicle" AND "one active vehicle per driver".
+  releasedAt       DateTime? @map("released_at") @db.Timestamptz(6)
+  releasedByUserId String?   @map("released_by_user_id") @db.Uuid
+  releaseReason    String?   @map("release_reason") @db.VarChar(500)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([vehicleId, releasedAt])
+  @@index([driverProfileId, releasedAt])
+  @@map("vehicle_assignments")
+}
+
+/// One working period binding a driver to a vehicle.
+model DriverShift {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  driverProfileId String        @map("driver_profile_id") @db.Uuid
+  driverProfile   DriverProfile @relation(fields: [driverProfileId], references: [id], onDelete: Cascade)
+
+  /// Denormalised for the "who is on shift" query, which is read constantly by
+  /// operations and would otherwise join through driver_profiles every time.
+  driverUserId String @map("driver_user_id") @db.Uuid
+  driverUser   User   @relation("ShiftDriver", fields: [driverUserId], references: [id], onDelete: Cascade)
+
+  vehicleId String  @map("vehicle_id") @db.Uuid
+  vehicle   Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  status ShiftStatus @default(OPEN)
+
+  startedAt DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  endedAt   DateTime? @map("ended_at") @db.Timestamptz(6)
+
+  /// BR-306. Referenced by FK rather than copied: the reading is immutable and
+  /// lives in one place, so a shift and its reading can never disagree.
+  openingMeterReadingId String?       @unique @map("opening_meter_reading_id") @db.Uuid
+  openingMeterReading   MeterReading? @relation("ShiftOpening", fields: [openingMeterReadingId], references: [id])
+
+  closingMeterReadingId String?       @unique @map("closing_meter_reading_id") @db.Uuid
+  closingMeterReading   MeterReading? @relation("ShiftClosing", fields: [closingMeterReadingId], references: [id])
+
+  /// Fuel in the tank at each boundary, for shift-level stock reconciliation.
+  openingFuelQuantity Decimal? @map("opening_fuel_quantity") @db.Decimal(12, 3)
+  closingFuelQuantity Decimal? @map("closing_fuel_quantity") @db.Decimal(12, 3)
+
+  /// PLACEHOLDER for the last known position (BR-309: only while on shift).
+  /// There is no live GPS ingest in this phase; the hot path will be
+  /// cache-first with a batched flush, not a column update per ping.
+  lastLatitude  Decimal?  @map("last_latitude") @db.Decimal(10, 7)
+  lastLongitude Decimal?  @map("last_longitude") @db.Decimal(10, 7)
+  lastLocationAt DateTime? @map("last_location_at") @db.Timestamptz(6)
+
+  startedByUserId String? @map("started_by_user_id") @db.Uuid
+  endedByUserId   String? @map("ended_by_user_id") @db.Uuid
+  notes           String? @db.VarChar(1000)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  /// A partial unique index enforces at most one OPEN shift per driver (INV-07).
+  @@index([driverProfileId, status])
+  @@index([vehicleId, status])
+  @@index([startedAt])
+  @@map("driver_shifts")
+}
+
+/// An immutable meter reading.
+///
+/// Billing derives quantity from TWO readings - closing minus opening - never
+/// from a typed quantity (BR-901). Two readings are auditable against tanker
+/// stock; one number is not.
+///
+/// Rows are NEVER updated. A wrong reading is superseded by a new one plus an
+/// operational note, so the mistake stays visible.
+model MeterReading {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  vehicleId String  @map("vehicle_id") @db.Uuid
+  vehicle   Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  /// The order this reading belongs to, for DELIVERY_START and DELIVERY_END.
+  ///
+  /// Nullable because shift and spot-check readings belong to a vehicle and a
+  /// moment, not to an order. Without this link the billed quantity could not
+  /// be traced back to the two readings that produced it, and BR-902 requires
+  /// exactly that on the invoice.
+  orderId String? @map("order_id") @db.Uuid
+  order   Order?  @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  readingType MeterReadingType @map("reading_type")
+
+  /// Lifetime, monotonically increasing counter. Wider than a tank quantity
+  /// because it accumulates for the life of the meter.
+  totalizer Decimal @db.Decimal(14, 3)
+
+  /// BR-905: both recorded, billing on NET. Diesel at 40 °C occupies ~1.5%
+  /// more volume than at 15 °C - real money on a large order.
+  grossQuantity Decimal? @map("gross_quantity") @db.Decimal(12, 3)
+  netQuantity   Decimal? @map("net_quantity") @db.Decimal(12, 3)
+  temperatureC  Decimal? @map("temperature_c") @db.Decimal(5, 2)
+
+  source MeterReadingSource @default(MANUAL_ENTRY)
+
+  /// BR-906: mandatory for MANUAL_ENTRY, enforced by the API and a CHECK.
+  photoKey String? @map("photo_key") @db.VarChar(512)
+
+  /// Never null: a reading nobody is accountable for is not evidence.
+  recordedByUserId String @map("recorded_by_user_id") @db.Uuid
+
+  /// When the meter was read, which may precede when it was entered.
+  capturedAt DateTime @default(now()) @map("captured_at") @db.Timestamptz(6)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  notes String? @db.VarChar(500)
+
+  shiftAsOpening DriverShift? @relation("ShiftOpening")
+  shiftAsClosing DriverShift? @relation("ShiftClosing")
+
+  @@index([vehicleId, capturedAt])
+  @@index([vehicleId, readingType, capturedAt])
+  @@map("meter_readings")
+}
+
+// ---------------------------------------------------------------------------
+// Pricing & catalog
+// ---------------------------------------------------------------------------
+
+/// What is being sold.
+///
+/// Diesel (HSD) at launch, but nothing hardcodes a product: the catalogue is
+/// data, prices reference a product id, and quotes name the product they were
+/// computed for. Adding petrol, DEF or bio-diesel is a row.
+model FuelProduct {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  /// Stable machine identifier, e.g. "HSD". Referenced by seeds and reports;
+  /// never used to branch business logic.
+  code        String  @unique @db.VarChar(32)
+  name        String  @db.VarChar(120)
+  description String? @db.VarChar(1000)
+
+  unit FuelUnit @default(LITRE)
+
+  /// Required on every invoice line for goods (BR-706).
+  hsnCode String? @map("hsn_code") @db.VarChar(16)
+
+  status CatalogStatus @default(ACTIVE)
+
+  /// Presentation order in the customer app. Not a business rule.
+  displayOrder Int @default(0) @map("display_order")
+
+  /// Soft delete. Prices and quotes reference products permanently.
+  archivedAt DateTime? @map("archived_at") @db.Timestamptz(6)
+
+  createdByUserId String?  @map("created_by_user_id") @db.Uuid
+  updatedByUserId String?  @map("updated_by_user_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  prices FuelPrice[]
+  quotes Quote[]
+  orders Order[]
+
+  @@index([status, displayOrder])
+  @@map("fuel_products")
+}
+
+/// An effective-dated price version. APPEND-ONLY.
+///
+/// A price is never updated. Changing the price inserts a new row and marks the
+/// previous one SUPERSEDED, which is what makes "changing today's price must
+/// never change yesterday's quote" true by construction rather than by
+/// discipline: a quote stores the price ROW id it used, and that row is
+/// immutable.
+///
+/// Overlap is prevented by a PostgreSQL EXCLUDE constraint over
+/// (product, city, effective range) among ACTIVE rows - BR-602 requires this be
+/// impossible by construction, not by convention. See the migration.
+model FuelPrice {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  productId String      @map("product_id") @db.Uuid
+  product   FuelProduct @relation(fields: [productId], references: [id])
+
+  /// BR-601: prices are per product PER CITY. Single-city at launch, but the
+  /// dimension exists now so multi-city (docs/12 §4.8) is data rather than a
+  /// migration of a table that quotes and orders already reference.
+  city String @db.VarChar(120)
+
+  /// The tax-INCLUSIVE retail rate - what the customer pays at the pump
+  /// (BR-705). Tax is extracted from it, never added to it.
+  pricePerUnit Decimal @map("price_per_unit") @db.Decimal(14, 4)
+
+  effectiveFrom  DateTime  @map("effective_from") @db.Timestamptz(6)
+  /// Null means "until superseded". Set when a newer version takes over.
+  effectiveUntil DateTime? @map("effective_until") @db.Timestamptz(6)
+
+  status PriceStatus @default(ACTIVE)
+
+  // --- Approval metadata (BR-607) ---
+  /// Populated when the price fell outside the sanity band and needed a second
+  /// administrator. Null on an ordinary in-band change.
+  requiresApproval Boolean   @default(false) @map("requires_approval")
+  approvedByUserId String?   @map("approved_by_user_id") @db.Uuid
+  approvedAt       DateTime? @map("approved_at") @db.Timestamptz(6)
+  /// Percentage change from the previous active price, recorded at creation so
+  /// the reason a price needed approval survives later price movements.
+  changePercent    Decimal?  @map("change_percent") @db.Decimal(8, 4)
+
+  supersededById String? @unique @map("superseded_by_id") @db.Uuid
+
+  notes String? @db.VarChar(1000)
+
+  createdByUserId String   @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// Present for status transitions only. The price itself is never edited.
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  quotes Quote[]
+  orders Order[]
+
+  @@index([productId, city, status, effectiveFrom])
+  @@index([effectiveFrom])
+  @@map("fuel_prices")
+}
+
+/// Tax configuration. NOT constants.
+///
+/// The regime/appliesTo/isInclusive triple is what makes a legal invoice
+/// possible (BR-703 - BR-705):
+///
+///   fuel line      VAT_EXCISE, INCLUSIVE  - tax extracted from the pump rate
+///   delivery line  GST,        EXCLUSIVE  - tax added on top of the charge
+///
+/// A single flat percentage cannot express either distinction, which is why
+/// BR-704 calls it out as producing legally invalid invoices.
+model TaxRule {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  /// Human name, e.g. "West Bengal VAT", "Central Excise", "GST".
+  name String @db.VarChar(120)
+  code String @unique @db.VarChar(64)
+
+  regime    TaxRegime
+  appliesTo TaxAppliesTo @map("applies_to")
+
+  calculationType TaxCalculationType @default(PERCENTAGE) @map("calculation_type")
+
+  /// A percentage (e.g. 18.0000) or an amount per unit (e.g. 19.9000 per litre)
+  /// depending on calculationType. Four decimals because excise and VAT rates
+  /// are quoted to fractions of a percent.
+  rate Decimal @db.Decimal(12, 4)
+
+  /// BR-705. True for the fuel line, false for delivery. Determines whether
+  /// tax is EXTRACTED from the amount or ADDED to it - getting this backwards
+  /// overstates tax on every line.
+  isInclusive Boolean @default(false) @map("is_inclusive")
+
+  /// BR-707. Null means "applies everywhere"; a value scopes the rule to one
+  /// state, which is what interstate GST treatment will need in Phase 2.
+  state String? @db.VarChar(120)
+
+  /// Service accounting code, for GST lines on the invoice (BR-706).
+  sacCode String? @map("sac_code") @db.VarChar(16)
+
+  /// Order of application within a line. Matters when a percentage tax is
+  /// levied on a base that already includes a per-unit duty.
+  sequence Int @default(0)
+
+  effectiveFrom  DateTime  @map("effective_from") @db.Timestamptz(6)
+  effectiveUntil DateTime? @map("effective_until") @db.Timestamptz(6)
+
+  status CatalogStatus @default(ACTIVE)
+
+  createdByUserId String?  @map("created_by_user_id") @db.Uuid
+  updatedByUserId String?  @map("updated_by_user_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([appliesTo, status, effectiveFrom])
+  @@map("tax_rules")
+}
+
+/// What delivery costs.
+///
+/// Only FLAT is implemented. Quantity bands and the free-above threshold come
+/// from BR-608; distance and zone variants are enum values plus a calculator
+/// branch away.
+model DeliveryChargeRule {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  name       String             @db.VarChar(120)
+  chargeType DeliveryChargeType @default(FLAT) @map("charge_type")
+
+  /// Null means "applies everywhere". Scoping is by city until zones exist.
+  city String? @db.VarChar(120)
+
+  /// The flat amount. Tax-EXCLUSIVE: GST is added on top (BR-705).
+  flatCharge Decimal @map("flat_charge") @db.Decimal(14, 2)
+
+  /// Quantity band this rule covers, in the product's unit.
+  minQuantity Decimal  @default(0) @map("min_quantity") @db.Decimal(12, 3)
+  maxQuantity Decimal? @map("max_quantity") @db.Decimal(12, 3)
+
+  /// Below this quantity an order is refused rather than surcharged. Distinct
+  /// from `minimumOrderValue`, which is about money.
+  minimumOrderQuantity Decimal? @map("minimum_order_quantity") @db.Decimal(12, 3)
+
+  /// Delivery is free at or above this order value (BR-608).
+  freeAboveOrderValue Decimal? @map("free_above_order_value") @db.Decimal(14, 2)
+
+  /// Service accounting code for the delivery line (BR-706).
+  sacCode String? @map("sac_code") @db.VarChar(16)
+
+  /// Lower wins when bands overlap, so precedence is explicit rather than
+  /// dependent on insertion order.
+  priority Int @default(100)
+
+  effectiveFrom  DateTime  @map("effective_from") @db.Timestamptz(6)
+  effectiveUntil DateTime? @map("effective_until") @db.Timestamptz(6)
+
+  status CatalogStatus @default(ACTIVE)
+
+  createdByUserId String?  @map("created_by_user_id") @db.Uuid
+  updatedByUserId String?  @map("updated_by_user_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status, city, priority])
+  @@map("delivery_charge_rules")
+}
+
+/// A server-computed, time-limited price lock.
+///
+/// Exists so the price lock is explicit and auditable, and so a client can
+/// never submit a price the server did not compute (BR-603, ADR-010).
+///
+/// Stores `priceId` - the exact price VERSION used. That reference is what
+/// makes "changing today's price never changes yesterday's quote" structurally
+/// true, and it is what an order will carry forward (BR-606).
+///
+/// `breakdown` is a frozen JSON snapshot of the full line-level computation.
+/// Deliberately denormalised: it must render identically in two years' time
+/// even after every rule that produced it has been superseded.
+model Quote {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  userId String @map("user_id") @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  addressId String  @map("address_id") @db.Uuid
+  address   Address @relation(fields: [addressId], references: [id])
+
+  productId String      @map("product_id") @db.Uuid
+  product   FuelProduct @relation(fields: [productId], references: [id])
+
+  /// The price version this quote was computed from. Immutable by design.
+  priceId String    @map("price_id") @db.Uuid
+  price   FuelPrice @relation(fields: [priceId], references: [id])
+
+  quantity Decimal @db.Decimal(12, 3)
+
+  /// Denormalised for cheap listing without rehydrating the breakdown.
+  fuelAmount     Decimal @map("fuel_amount") @db.Decimal(14, 2)
+  deliveryAmount Decimal @map("delivery_amount") @db.Decimal(14, 2)
+  taxAmount      Decimal @map("tax_amount") @db.Decimal(14, 2)
+  totalAmount    Decimal @map("total_amount") @db.Decimal(14, 2)
+
+  /// Full line-level computation, frozen. The invoice is built from this.
+  breakdown Json
+
+  /// City and state at computation time, so a later address edit cannot
+  /// change which tax rules a historical quote appears to have used (BR-707).
+  city  String  @db.VarChar(120)
+  state String? @db.VarChar(120)
+
+  status    QuoteStatus @default(ACTIVE)
+  expiresAt DateTime    @map("expires_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  /// At most one - a quote is single use (BR-802), enforced by a unique
+  /// constraint on orders.quote_id.
+  order Order?
+
+  @@index([userId, createdAt])
+  @@index([expiresAt])
+  @@index([status, expiresAt])
+  @@map("quotes")
+}
+
+// ---------------------------------------------------------------------------
+// Ordering
+// ---------------------------------------------------------------------------
+
+/// A customer's request for fuel at a place, and the record of what happened.
+///
+/// THE AGGREGATE ROOT OF THE PLATFORM (docs/05 §6).
+///
+/// Three things make this table unusual and all three are deliberate:
+///
+///  1. THREE STATUS COLUMNS, not one (ADR-007). Fulfilment, payment and
+///     settlement are independent lifecycles. Merging them cannot express
+///     "delivered, invoiced, refund still processing".
+///
+///  2. IT CARRIES BOTH ORDERED AND DELIVERED, and both estimated and final.
+///     They legitimately differ - a 200-litre order meets a tank with room for
+///     140 on an estimated 10-30% of orders (ADR-009).
+///
+///  3. IT DUPLICATES DATA IT COULD JOIN TO. The `*Snapshot` columns are frozen
+///     copies of the customer, address, product and price breakdown as they
+///     were at placement. That is the point: editing a saved address must never
+///     mutate an in-flight order (BR-805), and a price revision must never
+///     alter a placed one (BR-606). docs/08 §1.5: "if a value appears on a
+///     legal or financial document, snapshot it. The cost is duplication."
+model Order {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  /// Human-readable, for support conversations: DFY-2607-000123 (BR-810).
+  ///
+  /// A SEPARATE FIELD WITH DIFFERENT RULES from the UUID (docs/08 §2.3). Nobody
+  /// reads a UUID over the phone, and a bare sequential integer in a URL tells
+  /// a competitor the exact order count (ADR-005), so this is neither.
+  orderNumber String @unique @map("order_number") @db.VarChar(32)
+
+  // --- Who ----------------------------------------------------------------
+
+  userId String @map("user_id") @db.Uuid
+  user   User   @relation(fields: [userId], references: [id])
+
+  /// Corporate attribution. BOTH are recorded and BOTH survive the member
+  /// later being removed from the company (BR-223, BR-224) - which is why
+  /// these are plain nullable references with no cascade.
+  corporateAccountId String?           @map("corporate_account_id") @db.Uuid
+  corporateAccount   CorporateAccount? @relation(fields: [corporateAccountId], references: [id])
+
+  corporateMemberId String?          @map("corporate_member_id") @db.Uuid
+  corporateMember   CorporateMember? @relation(fields: [corporateMemberId], references: [id])
+
+  // --- What ---------------------------------------------------------------
+
+  /// The quote this order was created from (BR-801).
+  ///
+  /// UNIQUE, which is how "a quote may only be converted once" (BR-802) becomes
+  /// impossible to violate rather than merely checked. Two concurrent
+  /// submissions of one quote: the second hits this constraint and fails
+  /// cleanly, with no window between the check and the insert.
+  quoteId String @unique @map("quote_id") @db.Uuid
+  quote   Quote  @relation(fields: [quoteId], references: [id])
+
+  addressId String  @map("address_id") @db.Uuid
+  address   Address @relation(fields: [addressId], references: [id])
+
+  productId String      @map("product_id") @db.Uuid
+  product   FuelProduct @relation(fields: [productId], references: [id])
+
+  /// The exact PRICE VERSION this order is billed at (BR-606, BR-1201 pricing).
+  /// Immutable by construction: fuel_prices rows are append-only.
+  priceId String    @map("price_id") @db.Uuid
+  price   FuelPrice @relation(fields: [priceId], references: [id])
+
+  /// Ordered. Named `quantity` rather than `quantityLitres` because the
+  /// catalogue also sells by KILOGRAM (FuelUnit) - the unit lives on the
+  /// product snapshot, and baking LITRE into the column name would be wrong for
+  /// half the catalogue.
+  quantity Decimal @db.Decimal(12, 3)
+
+  /// Actually dispensed. NULL until a delivery reports it (BR-9, ADR-009).
+  deliveredQuantity Decimal? @map("delivered_quantity") @db.Decimal(12, 3)
+
+  // --- Frozen money (BR-606) ----------------------------------------------
+  // Explicit precision and scale on every money column (ADR-004 control M3).
+  // These NEVER change after creation - enforced by a database trigger, not by
+  // convention. See the migration.
+
+  fuelAmount     Decimal @map("fuel_amount") @db.Decimal(14, 2)
+  deliveryAmount Decimal @map("delivery_amount") @db.Decimal(14, 2)
+  taxAmount      Decimal @map("tax_amount") @db.Decimal(14, 2)
+  /// The ESTIMATED total: quantity ordered at the frozen rate.
+  totalAmount    Decimal @map("total_amount") @db.Decimal(14, 2)
+
+  /// The FINAL total, recomputed at the frozen rate against the delivered
+  /// quantity. NULL until reconciliation. The rate never changes here; only
+  /// the quantity varies (docs/07 §6).
+  finalTotalAmount Decimal? @map("final_total_amount") @db.Decimal(14, 2)
+
+  // --- Snapshots (BR-805, docs/08 §1.5) ------------------------------------
+
+  /// Name and contact as they were at placement, so a later profile edit does
+  /// not rewrite the delivery note.
+  customerSnapshot Json @map("customer_snapshot")
+
+  /// The full delivery address, frozen. The order references `addressId` too,
+  /// but ONLY for reporting - every read that matters uses this copy.
+  addressSnapshot Json @map("address_snapshot")
+
+  /// Code, name, unit and HSN code, frozen. HSN appears on the invoice.
+  productSnapshot Json @map("product_snapshot")
+
+  /// The line-level tax computation, copied verbatim from the quote. The
+  /// invoice is built from THIS, never from live pricing configuration.
+  pricingSnapshot Json @map("pricing_snapshot")
+
+  // --- The three status axes (ADR-007) -------------------------------------
+
+  status           OrderStatus      @default(DRAFT)
+  paymentStatus    PaymentStatus    @default(PENDING) @map("payment_status")
+  settlementStatus SettlementStatus @default(NOT_REQUIRED) @map("settlement_status")
+
+  /// Fixed at creation, never changed (BR-807).
+  paymentMode PaymentMode @map("payment_mode")
+
+  /// When the fulfilment status last changed. Drives the dwell-time watchdog:
+  /// every state has a maximum, and an order exceeding it raises an operational
+  /// alert rather than dying silently behind a crashed worker (BR-811).
+  statusChangedAt DateTime @default(now()) @map("status_changed_at") @db.Timestamptz(6)
+
+  /// When an unpaid order gives its fuel back (BR-1006). NULL once confirmed.
+  expiresAt DateTime? @map("expires_at") @db.Timestamptz(6)
+
+  // --- Cancellation (BR-1206) ----------------------------------------------
+
+  cancelledAt        DateTime?  @map("cancelled_at") @db.Timestamptz(6)
+  cancelledByUserId  String?    @map("cancelled_by_user_id") @db.Uuid
+  cancelledByKind    ActorKind? @map("cancelled_by_kind")
+  /// Mandatory whenever cancelledAt is set - enforced by a CHECK constraint.
+  /// An unexplained cancellation is a support call that cannot be answered.
+  cancellationReason String?    @map("cancellation_reason") @db.VarChar(1000)
+
+  // --- Denormalised for indexing -------------------------------------------
+  // Duplicated from the address snapshot so the dispatch board and city
+  // reports can filter without unpacking JSON on every row.
+
+  city  String  @db.VarChar(120)
+  state String? @db.VarChar(120)
+
+  /// Free-text note from the customer: "Gate 2, security pass needed".
+  deliveryInstructions String? @map("delivery_instructions") @db.VarChar(500)
+
+  placedAt  DateTime  @default(now()) @map("placed_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  statusEvents OrderStatusEvent[]
+  reservations FuelReservation[]
+
+  /// A customer's own order list, newest first (docs/08 §10.2).
+  @@index([userId, createdAt])
+  /// A company's orders.
+  @@index([corporateAccountId, createdAt])
+  /// The dispatch board. A partial index on the non-terminal subset is added
+  /// in raw SQL - Prisma cannot express one, and open orders are a tiny and
+  /// permanently tiny fraction of a table that grows without bound.
+  /// Delivery meter readings (DELIVERY_START / DELIVERY_END).
+  meterReadings MeterReading[]
+
+  @@index([status, statusChangedAt])
+  @@index([expiresAt])
+  @@map("orders")
+}
+
+/// The append-only history of every status change (docs/05 §6).
+///
+/// IMMUTABLE. No updates, no deletes. This drives the customer timeline, the
+/// support investigation view and every SLA report, and docs/04 §26 is blunt
+/// about the stakes: "A gap in this history is a support call that cannot be
+/// answered."
+///
+/// SYSTEM transitions - an automatically released reservation, an expired
+/// payment window - appear here exactly like human ones, with a reason.
+model OrderStatusEvent {
+  /// A monotonic sequence, not a UUID.
+  ///
+  /// The one place docs/08 §2.2 says sequential identifiers are correct:
+  /// "Append-only event and ledger tables - a monotonic sequence gives cheap,
+  /// correct ordering and efficient range scans. These identifiers are internal
+  /// and never exposed."
+  id BigInt @id @default(autoincrement())
+
+  orderId String @map("order_id") @db.Uuid
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  /// NULL on the very first event - an order coming into existence has no
+  /// previous state, and a sentinel value would be a lie.
+  fromStatus OrderStatus? @map("from_status")
+  toStatus   OrderStatus  @map("to_status")
+
+  actorKind ActorKind @map("actor_kind")
+  /// NULL exactly when actorKind is SYSTEM. Enforced by a CHECK constraint:
+  /// a human transition with no human attached is not auditable.
+  actorUserId String? @map("actor_user_id") @db.Uuid
+
+  /// Why. Free text for humans, and never optional in practice - the transition
+  /// service supplies the table's stated reason when the caller gives none.
+  reason String? @db.VarChar(1000)
+
+  /// Structured context: the reservation released, the vehicle, the gateway
+  /// event id. Whatever the next person investigating will wish was here.
+  metadata Json?
+
+  /// The request that caused it, so a timeline entry joins to its log lines
+  /// (docs/08 §7).
+  requestId String? @map("request_id") @db.VarChar(64)
+
+  occurredAt DateTime @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  /// The timeline read: one order, in order (docs/08 §10.2).
+  @@index([orderId, occurredAt])
+  @@index([toStatus, occurredAt])
+  @@map("order_status_events")
+}
+
+/// A claim on a specific quantity in a specific tanker.
+///
+/// OWNED BY DISPATCH, not Ordering (docs/06 §8). It lives in the dispatch
+/// module directory for that reason, even though Ordering is what triggers it.
+///
+/// This is the mechanism that stops two 200-litre orders being promised the
+/// same 300-litre tanker (BR-406). It does NOT deduct stock: reserving is a
+/// promise, and the stock only moves when fuel physically does, at the ACTUAL
+/// dispensed quantity rather than the reserved one (BR-408).
+model FuelReservation {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  orderId String @map("order_id") @db.Uuid
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  vehicleId String  @map("vehicle_id") @db.Uuid
+  vehicle   Vehicle @relation(fields: [vehicleId], references: [id])
+
+  /// Litres promised. Positive, always.
+  quantity Decimal @db.Decimal(12, 3)
+
+  status ReservationStatus @default(HELD)
+
+  /// When an unprogressed reservation stops sterilising stock (BR-407). A
+  /// sweeper releases past this; an abandoned order must not hold fuel forever.
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+
+  /// Set when status leaves HELD.
+  releasedAt     DateTime? @map("released_at") @db.Timestamptz(6)
+  /// From RESERVATION_RELEASE_REASON. docs/08 §1.2 names "why this reservation
+  /// was released" as a question only a history record can answer.
+  releaseReason  String?   @map("release_reason") @db.VarChar(64)
+
+  /// The actual quantity taken, set when the reservation is consumed. Differs
+  /// from `quantity` whenever delivery was partial or over (BR-408).
+  consumedQuantity Decimal? @map("consumed_quantity") @db.Decimal(12, 3)
+
+  /// NULL when a sweeper did it - SYSTEM has no user row.
+  createdByUserId String? @map("created_by_user_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  /// The expiry sweep: a partial index on (status, expires_at) where HELD is
+  /// added in raw SQL. docs/08 §10.1 calls partial indexes on hot subsets like
+  /// this "the highest-leverage indexing technique in this system".
+  @@index([vehicleId, status])
+  @@index([status, expiresAt])
+  @@map("fuel_reservations")
+}
+
+// ---------------------------------------------------------------------------
+// Platform
+// ---------------------------------------------------------------------------
+
+/// Makes a repeated mutating request safe (BR-803, ADR-013).
+///
+/// OWNED BY PLATFORM (docs/06 §17), which "never owns any business concept - if
+/// something here knows what an order is, it is in the wrong context". Hence
+/// `endpoint` and an opaque response body rather than an order reference.
+///
+/// Operational, not a business record: prunable on a retention schedule. An
+/// idempotency table with no expiry becomes the largest table in the database
+/// within a year (docs/08 §1.6).
+model IdempotencyKey {
+  /// The client-supplied key, scoped to the user and endpoint.
+  id String @id @default(uuid(7)) @db.Uuid
+
+  key String @db.VarChar(255)
+
+  /// Scoped per user: one customer's key must never collide with another's,
+  /// and a key must not be replayable across accounts.
+  userId String @map("user_id") @db.Uuid
+
+  /// `POST /orders`. Scoping by endpoint too means the same key on a different
+  /// operation is a distinct record rather than a false replay.
+  endpoint String @db.VarChar(255)
+
+  /// SHA-256 of the canonical request body. A replay with a DIFFERENT body is
+  /// a client bug and gets a 409 rather than the first response, because
+  /// returning the first would silently discard the second request (docs/10 §8.2).
+  requestHash String @map("request_hash") @db.VarChar(64)
+
+  state IdempotencyState @default(IN_PROGRESS)
+
+  /// The stored response, replayed verbatim on a repeat. NULL while in progress.
+  responseStatus Int?  @map("response_status")
+  responseBody   Json? @map("response_body")
+
+  /// The resource created, when there was one. Not a foreign key: Platform must
+  /// not know what an order is.
+  resourceId String? @map("resource_id") @db.Uuid
+
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  /// THE constraint that makes this work. Two simultaneous double-taps race to
+  /// insert; exactly one wins and the loser is told the operation is already in
+  /// flight. docs/08 §9.4: "a constraint violation is a correct outcome here,
+  /// not an error to be logged and ignored".
+  @@unique([userId, endpoint, key])
+  @@index([expiresAt])
+  @@map("idempotency_keys")
+}
+
+/// A side effect that must happen because a state change happened (ADR-012).
+///
+/// Written INSIDE the transaction that changed the state, drained by a worker
+/// afterwards. This is what prevents both "order saved but customer never told"
+/// and "customer told but the transaction rolled back" (BR-1402).
+///
+/// NOT A QUEUE - a durable intent. There is no drainer yet; rows accumulate and
+/// are asserted by tests. Emitting them from day one is deliberate: docs/09 §16
+/// warns that "retrofitting event emission is far harder than retrofitting a
+/// consumer".
+model OutboxEvent {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  /// 'order'. The aggregate that produced it.
+  aggregate   String @db.VarChar(64)
+  aggregateId String @map("aggregate_id") @db.Uuid
+
+  /// `domain.action`, past tense: `order.confirmed` (docs/11 §3).
+  eventType String @map("event_type") @db.VarChar(96)
+
+  /// SELF-CONTAINED. A consumer must never need to read the producer's tables
+  /// to render its message (docs/06 §19 anti-pattern 7).
+  payload Json
+
+  status   OutboxStatus @default(PENDING)
+  attempts Int          @default(0)
+
+  nextRetryAt DateTime? @map("next_retry_at") @db.Timestamptz(6)
+  lastError   String?   @map("last_error") @db.VarChar(2000)
+  processedAt DateTime? @map("processed_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  /// The drainer's read. A partial index on the pending subset is added in raw
+  /// SQL: pending rows stay a handful while done rows grow without bound.
+  @@index([status, nextRetryAt])
+  @@index([aggregate, aggregateId])
+  @@map("outbox_events")
+}
+
+model UserRole {
+  userId String @map("user_id") @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  roleId String @map("role_id") @db.Uuid
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  /// Who granted it. Nullable because seeded and self-service assignments have
+  /// no human actor. Role assignment is a high-value audit event (ADR-008).
+  assignedBy String?  @map("assigned_by") @db.Uuid
+  assignedAt DateTime @default(now()) @map("assigned_at") @db.Timestamptz(6)
+
+  @@id([userId, roleId])
+  @@index([roleId])
+  @@map("user_roles")
+}
