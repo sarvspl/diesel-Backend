@@ -17,6 +17,16 @@ let server;
 const start = async () => {
   await connectDatabase();
 
+  // The third guard on OTP_FIXED_CODE (the other two are in env.js and
+  // otp.service.js). Impossible to miss in a terminal, and impossible to
+  // explain away in a log if this ever reaches a shared environment.
+  if (env.OTP_FIXED_CODE) {
+    logger.warn(
+      { otpFixedCode: env.OTP_FIXED_CODE },
+      'AUTHENTICATION BYPASS ACTIVE: every OTP is this fixed code. Development only - unset OTP_FIXED_CODE before deploying anywhere shared'
+    );
+  }
+
   const app = createApp();
 
   server = app.listen(env.PORT, env.HOST, () => {

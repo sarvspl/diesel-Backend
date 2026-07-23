@@ -138,6 +138,24 @@ const envSchema = z
     OTP_TTL_SECONDS: z.coerce.number().int().min(30).max(900).default(300),
 
     /**
+     * A FIXED code for local testing, e.g. `123456`.
+     *
+     * DEVELOPMENT ONLY. Set it and every OTP issued becomes this exact value,
+     * so a tester can sign in as any seeded driver or customer without reading
+     * a log. Unset (the default) restores CSPRNG codes.
+     *
+     * This is an authentication bypass, so it is guarded three ways: the schema
+     * below REFUSES to boot production if it is set, the service checks
+     * `isProduction` again before using it, and the server logs a warning on
+     * every start while it is active. One guard on a value this dangerous is a
+     * single careless refactor away from being gone.
+     */
+    OTP_FIXED_CODE: z
+      .string()
+      .regex(/^\d{4,10}$/, 'OTP_FIXED_CODE must be 4-10 digits')
+      .optional(),
+
+    /**
      * OTP anti-abuse limits (BR-113, BR-114).
      *
      * Configuration rather than constants: these are exactly the numbers an
@@ -235,6 +253,18 @@ const envSchema = z
         code: 'custom',
         path: ['CORS_ORIGIN'],
         message: 'CORS_ORIGIN cannot be "*" in production - list the allowed origins explicitly',
+      });
+    }
+
+    // Refuse to BOOT rather than warn. A fixed OTP in production means every
+    // account on the platform shares one password, and a service that starts
+    // successfully in that state would look perfectly healthy.
+    if (value.NODE_ENV === 'production' && value.OTP_FIXED_CODE) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['OTP_FIXED_CODE'],
+        message:
+          'OTP_FIXED_CODE must never be set in production - it makes one code valid for every account',
       });
     }
   });

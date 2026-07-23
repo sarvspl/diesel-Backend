@@ -45,6 +45,24 @@ const cooldownFor = (resendCount) =>
   RESEND_COOLDOWN_SECONDS[Math.min(resendCount, RESEND_COOLDOWN_SECONDS.length - 1)];
 
 /**
+ * The code to issue.
+ *
+ * Normally a CSPRNG value. When `OTP_FIXED_CODE` is set OUTSIDE production, it
+ * is that constant instead, so a tester can sign in as any seeded account
+ * without reading a log.
+ *
+ * `isProduction` is re-checked here even though `env.js` already refuses to
+ * boot production with the variable set. Two independent guards, because a
+ * fixed OTP means one code opens every account on the platform, and a single
+ * check on a value that dangerous is one careless refactor away from gone.
+ */
+const issueCode = () => {
+  if (env.OTP_FIXED_CODE && !isProduction) return env.OTP_FIXED_CODE;
+
+  return generateNumericCode(env.OTP_LENGTH);
+};
+
+/**
  * Issue a code, or resend the current one's replacement.
  *
  * Returns `expiresAt` and `retryAfterSeconds` but NEVER the code, except in
@@ -101,7 +119,7 @@ export const requestOtp = async ({ identifier, principal, purpose, ipAddress }) 
   // simultaneously valid guess target with its own fresh attempt budget.
   await otpRepository.consumeAllLive({ identifier, principal, purpose });
 
-  const code = generateNumericCode(env.OTP_LENGTH);
+  const code = issueCode();
 
   const challenge = await otpRepository.create({
     identifier,
