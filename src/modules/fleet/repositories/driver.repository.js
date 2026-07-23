@@ -48,11 +48,15 @@ export const list = async ({ employmentStatus, limit, cursor }) =>
     ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
   });
 
-export const create = async ({ data, actorUserId }) =>
-  prisma.driverProfile.create({
+/** The same write against a caller-supplied client, for onboarding's transaction. */
+export const createIn = async (client, { data, actorUserId }) =>
+  client.driverProfile.create({
     data: { ...data, createdByUserId: actorUserId, updatedByUserId: actorUserId },
     select: DRIVER_DETAIL_FIELDS,
   });
+
+export const create = async ({ data, actorUserId }) =>
+  createIn(prisma, { data, actorUserId });
 
 export const update = async ({ id, data, actorUserId }) =>
   prisma.driverProfile.update({

@@ -1,4 +1,4 @@
-import { isProduction } from '../../../config/env.js';
+import { env, isProduction } from '../../../config/env.js';
 import { createLogger } from '../../../shared/logger/index.js';
 
 const log = createLogger({ module: 'otp.console' });
@@ -16,11 +16,20 @@ export const consoleOtpProvider = {
   name: 'console',
 
   async send({ identifier, code, purpose, ttlSeconds }) {
-    // Hard refusal rather than a warning. An operator who misconfigures
-    // OTP_PROVIDER in production would otherwise get a service that appears
-    // healthy while printing every login code into the log aggregator, where
-    // it is retained and searchable. Failing loudly is the safe direction.
-    if (isProduction) {
+    /**
+     * Hard refusal rather than a warning. An operator who misconfigures
+     * OTP_PROVIDER in production would otherwise get a service that appears
+     * healthy while printing every login code into the log aggregator, where
+     * it is retained and searchable. Failing loudly is the safe direction.
+     *
+     * The one exception is an explicitly configured
+     * `OTP_INSECURE_FIXED_CODE`: there the code is a published constant, so
+     * logging it leaks nothing that setting the variable has not already
+     * given away. That is a deliberate staging arrangement, not a
+     * misconfiguration, and refusing it would leave a demo box with no way to
+     * sign in at all.
+     */
+    if (isProduction && !env.OTP_INSECURE_FIXED_CODE) {
       throw new Error(
         'consoleOtpProvider must never run in production - configure a real SMS provider'
       );

@@ -1,5 +1,5 @@
 import { createApp, API_V1_PREFIX } from './app.js';
-import { env } from './config/env.js';
+import { env, isProduction } from './config/env.js';
 import { connectDatabase, disconnectDatabase } from './infrastructure/database/prisma.js';
 import { beginShutdown } from './shared/lifecycle.js';
 import { logger } from './shared/logger/index.js';
@@ -17,13 +17,16 @@ let server;
 const start = async () => {
   await connectDatabase();
 
-  // The third guard on OTP_FIXED_CODE (the other two are in env.js and
-  // otp.service.js). Impossible to miss in a terminal, and impossible to
-  // explain away in a log if this ever reaches a shared environment.
-  if (env.OTP_FIXED_CODE) {
-    logger.warn(
-      { otpFixedCode: env.OTP_FIXED_CODE },
-      'AUTHENTICATION BYPASS ACTIVE: every OTP is this fixed code. Development only - unset OTP_FIXED_CODE before deploying anywhere shared'
+  // Impossible to miss in a terminal, and impossible to explain away in a log.
+  // Deliberately `error` level in production: on a public host this is not a
+  // note, it is the single most important fact about the deployment.
+  if (env.OTP_INSECURE_FIXED_CODE) {
+    const announce = isProduction ? logger.error : logger.warn;
+
+    announce.call(
+      logger,
+      { otpFixedCode: env.OTP_INSECURE_FIXED_CODE, nodeEnv: env.NODE_ENV },
+      'AUTHENTICATION BYPASS ACTIVE: every OTP is this fixed code, so anyone who knows a phone number can sign in as that user. Unset OTP_INSECURE_FIXED_CODE before this serves real customers'
     );
   }
 

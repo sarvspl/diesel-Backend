@@ -13,6 +13,7 @@ import {
   createVehicleSchema,
   endShiftSchema,
   listDriversSchema,
+  onboardDriverSchema,
   listShiftsSchema,
   listVehiclesSchema,
   manualAdjustmentSchema,
@@ -49,6 +50,19 @@ router.get(
   requirePermission(PERMISSIONS.DRIVER_READ),
   validate(listDriversSchema),
   controller.listDrivers
+);
+
+/**
+ * Onboarding. Registered BEFORE `/drivers/profile` so the literal path is not
+ * shadowed, and separate from it because they answer different questions:
+ * this one mints an identity, that one attaches an employment record to an
+ * identity that already exists.
+ */
+router.post(
+  '/drivers',
+  requirePermission(PERMISSIONS.DRIVER_MANAGE),
+  validate(onboardDriverSchema),
+  controller.onboardDriver
 );
 
 router.post(

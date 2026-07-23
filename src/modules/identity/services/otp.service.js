@@ -47,17 +47,22 @@ const cooldownFor = (resendCount) =>
 /**
  * The code to issue.
  *
- * Normally a CSPRNG value. When `OTP_FIXED_CODE` is set OUTSIDE production, it
- * is that constant instead, so a tester can sign in as any seeded account
- * without reading a log.
+ * Normally a CSPRNG value. When `OTP_INSECURE_FIXED_CODE` is set it is that
+ * constant instead, in EVERY environment — see the note on the variable in
+ * `env.js` for why production is included and what it costs.
  *
- * `isProduction` is re-checked here even though `env.js` already refuses to
- * boot production with the variable set. Two independent guards, because a
- * fixed OTP means one code opens every account on the platform, and a single
- * check on a value that dangerous is one careless refactor away from gone.
+ * Logged at `warn` on every issue rather than only at boot: a bypass that is
+ * announced once, days ago, in a log nobody is tailing, is a bypass nobody
+ * remembers is on.
  */
 const issueCode = () => {
-  if (env.OTP_FIXED_CODE && !isProduction) return env.OTP_FIXED_CODE;
+  if (env.OTP_INSECURE_FIXED_CODE) {
+    log.warn(
+      { insecureFixedOtp: true },
+      'OTP AUTHENTICATION BYPASS: issuing the configured fixed code, not a random one'
+    );
+    return env.OTP_INSECURE_FIXED_CODE;
+  }
 
   return generateNumericCode(env.OTP_LENGTH);
 };
@@ -144,10 +149,18 @@ export const requestOtp = async ({ identifier, principal, purpose, ipAddress }) 
     challengeId: challenge.id,
     expiresAt: challenge.expiresAt,
     retryAfterSeconds: cooldownFor(challenge.resendCount),
-    // Development convenience only. `isProduction` is checked here AND inside
-    // the console provider, because a single guard on a value this sensitive
-    // is one refactor away from being removed.
-    ...(isProduction ? {} : { devCode: code }),
+    /**
+     * The code, echoed back to the caller.
+     *
+     * Outside production this is ordinary development convenience. In
+     * production it is returned ONLY when the code is the configured fixed
+     * constant — which is not a secret by construction, so echoing it
+     * discloses nothing that setting the variable has not already disclosed.
+     *
+     * A genuinely random production code is never echoed, which is the case
+     * this condition exists to protect.
+     */
+    ...(isProduction && !env.OTP_INSECURE_FIXED_CODE ? {} : { devCode: code }),
   };
 };
 

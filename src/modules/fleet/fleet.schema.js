@@ -74,6 +74,33 @@ export const listDriversSchema = {
   }),
 };
 
+/**
+ * Onboard a driver: identity and employment record in one call.
+ *
+ * `phone` is the only identifier. It is what the driver signs in with, and the
+ * app is OTP-only — there is no password to set and no email to collect.
+ *
+ * `fullName` is REQUIRED here although the profile column is nullable. A
+ * dispatcher assigning work reads a name, and a customer expecting a delivery
+ * is told one; an unnamed driver is a row nobody can act on. The nullable
+ * column stays for the older `createDriverProfile` path and for rows the seeds
+ * wrote before this endpoint existed.
+ */
+export const onboardDriverSchema = {
+  body: z.object({
+    phone: indianPhone,
+    fullName: z.string().trim().min(1).max(120),
+    employeeCode: z.string().trim().max(32).optional(),
+    licenseNumber: z.string().trim().max(64).optional(),
+    licenseExpiry: isoDate.optional(),
+    licenseDocumentKey: objectKey.optional(),
+    emergencyContactName: z.string().trim().max(120).optional(),
+    emergencyContactPhone: indianPhone.optional(),
+    joinedOn: isoDate.optional(),
+    notes: z.string().trim().max(2000).optional(),
+  }),
+};
+
 export const createDriverProfileSchema = {
   body: z.object({
     /**

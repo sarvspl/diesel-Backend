@@ -1,6 +1,7 @@
+import { prisma } from '../../../infrastructure/database/prisma.js';
 import { ERROR_CODES } from '../../../shared/constants/error-codes.js';
 import { DRIVER_EMPLOYMENT_STATUS, SHIFT_STATUS } from '../../../shared/constants/fleet.js';
-import { PRINCIPALS } from '../../../shared/constants/rbac.js';
+import { DEFAULT_ROLE_BY_PRINCIPAL, PRINCIPALS } from '../../../shared/constants/rbac.js';
 import { BadRequestError, ConflictError, NotFoundError } from '../../../shared/errors/index.js';
 import { createLogger } from '../../../shared/logger/index.js';
 import * as userRepository from '../../identity/repositories/user.repository.js';
@@ -15,9 +16,14 @@ const log = createLogger({ module: 'fleet.driver' });
 /**
  * Driver employment profiles and shifts.
  *
- * Identity is NOT created here. A driver already exists as a `users` row with
- * principal DRIVER, created by an administrator through the identity module
- * (BR-301). This adds the employment record on top.
+ * ONBOARDING (`onboardDriver`) creates the identity AND the employment record
+ * together. `createDriverProfile` is the older, narrower path that attaches a
+ * profile to an identity someone else already made — kept because it is the
+ * right call when an account exists and only the employment record is missing.
+ *
+ * BR-301 says drivers are created by an administrator, and that is now
+ * literally true: an admin endpoint mints them. Nothing public can, because a
+ * driver handles hazardous goods under a licence.
  *
  * Two orthogonal status axes (ADR-007):
  *   employmentStatus  admin-controlled, long-lived
@@ -92,6 +98,67 @@ export const getDriver = async (id) => {
  * here would be a second way to mint an account, which is exactly what BR-301
  * and ADR-016 rule out.
  */
+/**
+ * Onboard a driver: identity and employment record, in one transaction.
+ *
+ * ATOMIC ON PURPOSE. Half of this is worse than none of it — a `users` row with
+ * no profile cannot be dispatched, yet it holds the phone number against the
+ * unique index, so an operator retrying the form is told the account already
+ * exists and has no way forward from the UI. Both or neither.
+ *
+ * `phoneVerified` is deliberately FALSE. An administrator typing a number into
+ * a form has not proved the driver controls it; the driver proves that on first
+ * OTP sign-in, which is exactly what `authenticateWithOtp` records. Marking it
+ * verified here would forge that proof.
+ *
+ * No password is set. Drivers authenticate by OTP only.
+ */
+export const onboardDriver = async ({ actorUserId, phone, ...input }) => {
+  const existing = await userRepository.findByIdentifierForAuth({
+    principal: PRINCIPALS.DRIVER,
+    phone,
+  });
+
+  if (existing) {
+    throw new ConflictError('A driver account already exists for that mobile number', {
+      code: ERROR_CODES.ACCOUNT_ALREADY_EXISTS,
+      details: { phone },
+    });
+  }
+
+  const driver = await prisma.$transaction(async (tx) => {
+    const user = await userRepository.createWithRoleIn(tx, {
+      principal: PRINCIPALS.DRIVER,
+      phone,
+      roleCode: DEFAULT_ROLE_BY_PRINCIPAL[PRINCIPALS.DRIVER],
+      phoneVerified: false,
+    });
+
+    return driverRepository.createIn(tx, {
+      data: {
+        userId: user.id,
+        employeeCode: input.employeeCode ?? null,
+        fullName: input.fullName,
+        licenseNumber: input.licenseNumber ?? null,
+        licenseExpiry: input.licenseExpiry ?? null,
+        licenseDocumentKey: input.licenseDocumentKey ?? null,
+        emergencyContactName: input.emergencyContactName ?? null,
+        emergencyContactPhone: input.emergencyContactPhone ?? null,
+        joinedOn: input.joinedOn ?? null,
+        notes: input.notes ?? null,
+      },
+      actorUserId,
+    });
+  });
+
+  log.info(
+    { driverProfileId: driver.id, userId: driver.userId, actorUserId },
+    'driver onboarded'
+  );
+
+  return toPublicDriver(driver, { includeLicenseNumber: true });
+};
+
 export const createDriverProfile = async ({ userId, actorUserId, ...input }) => {
   const user = await userRepository.findByIdWithRoles(userId);
 

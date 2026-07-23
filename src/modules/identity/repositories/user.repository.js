@@ -105,6 +105,36 @@ export const markPhoneVerified = async (id) => {
  * Both must happen or neither: a user with no role can authenticate but can do
  * nothing, which is a confusing half-state to debug.
  */
+/**
+ * The same write, against a caller-supplied client.
+ *
+ * Exists because onboarding a driver creates an identity AND an employment
+ * profile, and half of that is worse than neither: a user with no profile
+ * cannot be dispatched but occupies the phone number, so the operator cannot
+ * simply try again. The caller passes its transaction and gets both or nothing.
+ */
+export const createWithRoleIn = async (
+  client,
+  { principal, phone, email, passwordHash, roleCode, consentVersion, phoneVerified = false }
+) =>
+  client.user.create({
+    data: {
+      principal,
+      phone: phone ?? null,
+      email: email ?? null,
+      passwordHash: passwordHash ?? null,
+      phoneVerifiedAt: phoneVerified ? new Date() : null,
+      consentVersion: consentVersion ?? null,
+      consentAt: consentVersion ? new Date() : null,
+      roles: {
+        create: {
+          role: { connect: { code: roleCode } },
+        },
+      },
+    },
+    select: WITH_ROLES,
+  });
+
 export const createWithRole = async ({
   principal,
   phone,

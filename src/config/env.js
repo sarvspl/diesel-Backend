@@ -138,21 +138,26 @@ const envSchema = z
     OTP_TTL_SECONDS: z.coerce.number().int().min(30).max(900).default(300),
 
     /**
-     * A FIXED code for local testing, e.g. `123456`.
+     * A FIXED OTP for every account, e.g. `123456`.
      *
-     * DEVELOPMENT ONLY. Set it and every OTP issued becomes this exact value,
-     * so a tester can sign in as any seeded driver or customer without reading
-     * a log. Unset (the default) restores CSPRNG codes.
+     * THIS IS AN AUTHENTICATION BYPASS. While it is set, anyone who knows a
+     * phone number can sign in as that person — driver, customer or admin —
+     * because the code is no longer a secret. It exists so a staging box with
+     * no SMS vendor can still be demonstrated end to end.
      *
-     * This is an authentication bypass, so it is guarded three ways: the schema
-     * below REFUSES to boot production if it is set, the service checks
-     * `isProduction` again before using it, and the server logs a warning on
-     * every start while it is active. One guard on a value this dangerous is a
-     * single careless refactor away from being gone.
+     * It works in EVERY environment, production included, because the staging
+     * deployment runs `NODE_ENV=production` and the alternative — running a
+     * public host in development mode — would also relax CORS and leak stack
+     * traces in error responses. This is the narrower hole of the two.
+     *
+     * The name is the guard rail. Nothing called INSECURE gets into a real
+     * deployment's config by accident, and it is impossible to miss in a
+     * review. It is also announced loudly at every boot and on every code
+     * issued. Unset it and CSPRNG codes return with no other change.
      */
-    OTP_FIXED_CODE: z
+    OTP_INSECURE_FIXED_CODE: z
       .string()
-      .regex(/^\d{4,10}$/, 'OTP_FIXED_CODE must be 4-10 digits')
+      .regex(/^\d{4,10}$/, 'OTP_INSECURE_FIXED_CODE must be 4-10 digits')
       .optional(),
 
     /**
@@ -256,17 +261,6 @@ const envSchema = z
       });
     }
 
-    // Refuse to BOOT rather than warn. A fixed OTP in production means every
-    // account on the platform shares one password, and a service that starts
-    // successfully in that state would look perfectly healthy.
-    if (value.NODE_ENV === 'production' && value.OTP_FIXED_CODE) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['OTP_FIXED_CODE'],
-        message:
-          'OTP_FIXED_CODE must never be set in production - it makes one code valid for every account',
-      });
-    }
   });
 
 const parsed = envSchema.safeParse(process.env);

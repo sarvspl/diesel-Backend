@@ -22,6 +22,22 @@ export const listDrivers = async (req, res) => {
   return sendSuccess(res, { message: 'Drivers retrieved', data: result });
 };
 
+/**
+ * POST /api/v1/admin/drivers
+ *
+ * Onboarding: creates the login identity and the employment record together.
+ * `/drivers/profile` below is the narrower path for an identity that already
+ * exists.
+ */
+export const onboardDriver = async (req, res) => {
+  const driver = await driverService.onboardDriver({
+    actorUserId: req.auth.userId,
+    ...req.validated.body,
+  });
+
+  return sendCreated(res, { message: 'Driver onboarded', data: { driver } });
+};
+
 /** POST /api/v1/admin/drivers/profile */
 export const createDriverProfile = async (req, res) => {
   const driver = await driverService.createDriverProfile({
