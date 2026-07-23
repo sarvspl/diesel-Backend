@@ -112,6 +112,11 @@ const resetScenario = async (driverProfileId) => {
   });
 
   if (order) {
+    const before = await prisma.order.findUnique({
+      where: { id: order.id },
+      select: { status: true },
+    });
+
     await prisma.order.update({
       where: { id: order.id },
       data: {
@@ -120,6 +125,34 @@ const resetScenario = async (driverProfileId) => {
         settlementStatus: 'NOT_REQUIRED',
       },
     });
+
+    /**
+     * Record the rewind, rather than leaving a hole in the audit trail.
+     *
+     * This reset writes `status` directly instead of going through
+     * `transitionOrder`, because it deliberately moves BACKWARDS along a state
+     * machine that only goes forwards. That is legitimate for a fixture — but
+     * without an event the timeline silently stops reconciling: a real reading
+     * of one order showed `ASSIGNED → ALLOCATING` and then, with nothing in
+     * between, `ASSIGNED → EN_ROUTE`. Anyone auditing that order would have
+     * concluded a status changed with no record, which is the one thing an
+     * append-only history is supposed to make impossible.
+     *
+     * SYSTEM with no actor user, which is what the check constraint requires.
+     */
+    if (before && before.status !== 'ASSIGNED') {
+      await prisma.orderStatusEvent.create({
+        data: {
+          orderId: order.id,
+          fromStatus: before.status,
+          toStatus: 'ASSIGNED',
+          actorKind: 'SYSTEM',
+          actorUserId: null,
+          reason: 'Test fixture reset by scripts/verify-driver-flow.mjs',
+          occurredAt: new Date(),
+        },
+      });
+    }
 
     await prisma.fuelReservation.updateMany({
       where: { orderId: order.id },
