@@ -170,6 +170,18 @@ const envSchema = z
      * The per-IP limit is the commercially important one - it is what stops an
      * attacker rotating phone numbers to run up the operator's SMS bill.
      */
+    /**
+     * How long a verified fuel reading stays trustworthy, in hours.
+     *
+     * Past this, `dispatchability` raises FUEL_STATE_STALE and the tanker
+     * cannot be sent: dispatch reserves against a number, and a number nobody
+     * has checked since yesterday is a guess.
+     *
+     * Configuration because it is an operational trade-off — a shorter window
+     * means more dip readings and fewer surprises at the customer's tank.
+     */
+    INVENTORY_STALE_AFTER_HOURS: z.coerce.number().int().min(1).max(720).default(12),
+
     OTP_MAX_SENDS_PER_IDENTIFIER_PER_HOUR: z.coerce.number().int().min(1).default(3),
     OTP_MAX_SENDS_PER_IP_PER_HOUR: z.coerce.number().int().min(1).default(20),
     OTP_MAX_VERIFY_ATTEMPTS: z.coerce.number().int().min(3).max(10).default(5),

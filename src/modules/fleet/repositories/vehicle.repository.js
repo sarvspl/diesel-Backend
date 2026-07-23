@@ -161,6 +161,48 @@ export const createAssignment = async ({ vehicleId, driverProfileId, actorUserId
   });
 
 /**
+ * Swap one driver for another in a SINGLE transaction.
+ *
+ * Reassignment is the common operation - a driver calls in sick and the tanker
+ * goes to someone else - and doing it as release-then-assign leaves a window
+ * where the vehicle has nobody. If the second call fails, an operator who
+ * meant to change the driver has instead removed one, and the vehicle is
+ * NO_DRIVER_ASSIGNED until a human notices.
+ *
+ * The partial unique indexes on `released_at IS NULL` still do the real work:
+ * the release must land before the create, or the vehicle index rejects it.
+ * That ordering is guaranteed here because both are in the same transaction.
+ */
+export const replaceAssignment = async ({
+  currentAssignmentId,
+  vehicleId,
+  driverProfileId,
+  actorUserId,
+  reason,
+}) =>
+  prisma.$transaction(async (tx) => {
+    await tx.vehicleAssignment.update({
+      where: { id: currentAssignmentId },
+      data: {
+        releasedAt: new Date(),
+        releasedByUserId: actorUserId,
+        releaseReason: reason ?? 'Reassigned to another driver',
+      },
+    });
+
+    return tx.vehicleAssignment.create({
+      data: { vehicleId, driverProfileId, assignedByUserId: actorUserId },
+      select: {
+        id: true,
+        vehicleId: true,
+        driverProfileId: true,
+        assignedAt: true,
+        releasedAt: true,
+      },
+    });
+  });
+
+/**
  * Release an assignment. Never deleted - "who was driving on the 14th" must
  * stay answerable (history is append-only).
  */

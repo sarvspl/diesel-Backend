@@ -219,7 +219,18 @@ export const vehicleIdSchema = {
 
 export const assignDriverSchema = {
   params: z.object({ id: uuid('Vehicle id') }),
-  body: z.object({ driverProfileId: uuid('Driver profile id') }),
+  body: z.object({
+    driverProfileId: uuid('Driver profile id'),
+    /**
+     * Displace the driver currently on this vehicle, in one transaction.
+     *
+     * Defaults FALSE so a plain assign still refuses an occupied vehicle:
+     * pushing someone off their tanker should be an explicit act, not the
+     * accidental outcome of a retried request.
+     */
+    replace: z.boolean().default(false),
+    reason: z.string().trim().max(500).optional(),
+  }),
 };
 
 export const unassignDriverSchema = {
@@ -249,6 +260,23 @@ export const refillSchema = {
     photoKey: objectKey.optional(),
     occurredAt: pastTimestamp.optional(),
     notes: z.string().trim().max(1000).optional(),
+  }),
+};
+
+/**
+ * A dip reading: what a human saw in the tank.
+ *
+ * Only the observed level is asked for. The variance against the recorded
+ * figure is COMPUTED, never supplied — letting a caller state both the level
+ * and the difference invites the two to disagree, and the ledger would have no
+ * way to know which was the lie.
+ */
+export const dipReadingSchema = {
+  params: z.object({ id: uuid('Vehicle id') }),
+  body: z.object({
+    /** Zero is legitimate: an empty tank is a reading, not a missing one. */
+    observedQuantity: litres({ allowZero: true }),
+    notes: z.string().trim().max(500).optional(),
   }),
 };
 

@@ -16,6 +16,7 @@ import {
   onboardDriverSchema,
   listShiftsSchema,
   listVehiclesSchema,
+  dipReadingSchema,
   manualAdjustmentSchema,
   meterReadingSchema,
   refillSchema,
@@ -163,6 +164,19 @@ router.post(
   requirePermission(PERMISSIONS.INVENTORY_RECORD),
   validate(refillSchema),
   controller.recordRefill
+);
+
+/**
+ * A dip reading. `inventory.record`, not `inventory.adjust`: reporting what is
+ * in the tank is routine depot work, and requiring the higher grant would mean
+ * a stale tanker waits for a manager to clear a blocker anyone can see.
+ * A VARIANCE it discovers is still recorded, and still visible.
+ */
+router.post(
+  '/vehicles/:id/dip-reading',
+  requirePermission(PERMISSIONS.INVENTORY_RECORD),
+  validate(dipReadingSchema),
+  controller.recordDipReading
 );
 
 /** Higher grant: a manual correction can conceal a loss. */

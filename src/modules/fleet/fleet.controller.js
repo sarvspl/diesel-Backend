@@ -144,6 +144,28 @@ export const recordRefill = async (req, res) => {
 };
 
 /** POST /api/v1/admin/vehicles/:id/manual-adjustment */
+/**
+ * POST /api/v1/admin/vehicles/:id/dip-reading
+ *
+ * 200, not 201: the dip may create nothing at all. When it agrees with the
+ * recorded level there is no adjustment to point at, and claiming a resource
+ * was created would be a lie about what happened.
+ */
+export const recordDipReading = async (req, res) => {
+  const result = await inventoryService.recordDipReading({
+    vehicleId: req.validated.params.id,
+    actorUserId: req.auth.userId,
+    ...req.validated.body,
+  });
+
+  return sendSuccess(res, {
+    message: result.adjustment
+      ? 'Dip reading recorded — a variance was posted'
+      : 'Dip reading confirmed the recorded level',
+    data: result,
+  });
+};
+
 export const recordManualAdjustment = async (req, res) => {
   const adjustment = await inventoryService.recordManualAdjustment({
     vehicleId: req.validated.params.id,

@@ -21,7 +21,21 @@ const log = createLogger({ module: 'fleet.assignment' });
  * History is append-only: unassigning sets `releasedAt`, never deletes.
  */
 
-export const assignDriver = async ({ vehicleId, driverProfileId, actorUserId }) => {
+/**
+ * Assign a driver, REPLACING the current one if `replace` is set.
+ *
+ * Without `replace` this refuses a vehicle that already has a driver, which is
+ * the safe default: silently displacing someone is not something an operator
+ * should be able to do by accident. With it, the swap is one transaction so the
+ * vehicle is never briefly driverless.
+ */
+export const assignDriver = async ({
+  vehicleId,
+  driverProfileId,
+  actorUserId,
+  replace = false,
+  reason,
+}) => {
   const vehicle = await vehicleRepository.findByIdBasic(vehicleId);
 
   if (!vehicle) throw new NotFoundError('Vehicle not found');
@@ -49,19 +63,25 @@ export const assignDriver = async ({ vehicleId, driverProfileId, actorUserId }) 
 
   const vehicleAssignment = await vehicleRepository.findActiveAssignmentForVehicle(vehicleId);
 
-  if (vehicleAssignment) {
-    if (vehicleAssignment.driverProfileId === driverProfileId) {
-      // Already the intended state. Not an error to retry.
-      throw new ConflictError('That driver is already assigned to this vehicle', {
-        code: ERROR_CODES.ASSIGNMENT_UNCHANGED,
-      });
-    }
+  if (vehicleAssignment && vehicleAssignment.driverProfileId === driverProfileId) {
+    // Already the intended state. Not an error to retry, and REPLACE does not
+    // change that — swapping a driver for themselves is a no-op either way.
+    throw new ConflictError('That driver is already assigned to this vehicle', {
+      code: ERROR_CODES.ASSIGNMENT_UNCHANGED,
+    });
+  }
 
+  if (vehicleAssignment && !replace) {
     throw new ConflictError('This vehicle already has an assigned driver. Unassign them first.', {
       code: ERROR_CODES.VEHICLE_ALREADY_ASSIGNED,
     });
   }
 
+  /**
+   * The incoming driver must be free EVEN WHEN REPLACING. One vehicle per
+   * driver is the other exclusivity rule, and `replace` is permission to
+   * displace the outgoing driver — not to double-book the incoming one.
+   */
   const driverAssignment = await vehicleRepository.findActiveAssignmentForDriver(driverProfileId);
 
   if (driverAssignment) {
@@ -70,13 +90,29 @@ export const assignDriver = async ({ vehicleId, driverProfileId, actorUserId }) 
     });
   }
 
-  const assignment = await vehicleRepository.createAssignment({
-    vehicleId,
-    driverProfileId,
-    actorUserId,
-  });
+  const assignment = vehicleAssignment
+    ? await vehicleRepository.replaceAssignment({
+        currentAssignmentId: vehicleAssignment.id,
+        vehicleId,
+        driverProfileId,
+        actorUserId,
+        reason,
+      })
+    : await vehicleRepository.createAssignment({
+        vehicleId,
+        driverProfileId,
+        actorUserId,
+      });
 
-  log.info({ vehicleId, driverProfileId, actorUserId }, 'driver assigned to vehicle');
+  log.info(
+    {
+      vehicleId,
+      driverProfileId,
+      actorUserId,
+      replaced: vehicleAssignment?.driverProfileId ?? null,
+    },
+    vehicleAssignment ? 'driver reassigned' : 'driver assigned to vehicle'
+  );
 
   return assignment;
 };

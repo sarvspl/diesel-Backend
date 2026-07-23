@@ -117,6 +117,75 @@ export const recordRefill = async ({ vehicleId, actorUserId, quantity, ...input 
  * theft, and this is the endpoint someone would use to conceal it. It also
  * carries its own permission, separate from recording a refill.
  */
+/**
+ * Record a DIP READING: what a human actually saw in the tank.
+ *
+ * This is what clears FUEL_STATE_STALE, and it is the operation the blocker's
+ * own copy asks for ("Record a dip reading"). Until now nothing in the product
+ * could do it, so a stale tanker stayed blocked forever.
+ *
+ * The observed figure is AUTHORITATIVE. Any difference from the recorded
+ * quantity is posted as a manual adjustment so the ledger still explains
+ * itself — a tank that reads 40 litres light has either leaked, been pilfered
+ * or been mismeasured, and all three deserve a row someone can ask about.
+ *
+ * When the dip AGREES, no adjustment is written. There was no movement, and a
+ * zero-quantity row would be noise in the one place noise is expensive.
+ */
+export const recordDipReading = async ({ vehicleId, actorUserId, observedQuantity, notes }) => {
+  const vehicle = await loadVehicleOrThrow(vehicleId);
+
+  const inventory = await inventoryRepository.findInventory(vehicleId);
+  const recorded = Number(inventory?.currentQuantity ?? 0);
+  const observed = Number(observedQuantity);
+
+  if (observed > Number(vehicle.tankCapacity)) {
+    throw new BadRequestError('That is more than the tank holds', {
+      code: ERROR_CODES.EXCEEDS_CAPACITY,
+      details: { tankCapacity: String(vehicle.tankCapacity), observedQuantity },
+    });
+  }
+
+  const delta = Number((observed - recorded).toFixed(3));
+
+  if (delta === 0) {
+    await inventoryRepository.markVerified({ vehicleId });
+
+    log.info({ vehicleId, observed, actorUserId }, 'dip reading confirmed the recorded level');
+
+    return { adjustment: null, variance: '0.000', inventory: await getInventory(vehicleId) };
+  }
+
+  const adjustment = await inventoryRepository.postAdjustment({
+    vehicleId,
+    type:
+      delta > 0
+        ? INVENTORY_ADJUSTMENT_TYPE.MANUAL_INCREASE
+        : INVENTORY_ADJUSTMENT_TYPE.MANUAL_DECREASE,
+    quantityDelta: delta,
+    reasonCode: 'DIP_VARIANCE',
+    reason:
+      notes ??
+      `Dip reading: observed ${observed} against a recorded ${recorded}`,
+    occurredAt: new Date(),
+    performedByUserId: actorUserId,
+    source: FUEL_STOCK_SOURCE.DIP,
+    capacity: vehicle.tankCapacity,
+  });
+
+  // Warn, not info: a variance is exactly what an auditor looks for.
+  log.warn({ vehicleId, recorded, observed, delta, actorUserId }, 'dip reading found a variance');
+
+  return {
+    adjustment: toPublicAdjustment(adjustment),
+    variance: delta.toFixed(3),
+    // `getInventory`, NOT the raw repository row. That row carries a BigInt
+    // `version` column, and Express cannot serialise one — returning it turned
+    // a successful dip into a 500 with the variance already committed.
+    inventory: await getInventory(vehicleId),
+  };
+};
+
 export const recordManualAdjustment = async ({
   vehicleId,
   actorUserId,

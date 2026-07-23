@@ -227,6 +227,135 @@ async function main() {
   });
   equal('the freed driver can be assigned again', reassigned.status, 201);
 
+  // --- Reassignment ---------------------------------------------------------
+  section('REASSIGN IN ONE STEP');
+
+  // Free driver B up so it can take the vehicle.
+  await prisma.driverProfile.update({
+    where: { id: b.id },
+    data: { employmentStatus: 'ACTIVE' },
+  });
+
+  const noReplace = await call('POST', `/admin/vehicles/${v.id}/assign-driver`, {
+    driverProfileId: b.id,
+  });
+  equal(
+    'without `replace` an occupied vehicle is still refused',
+    noReplace.code,
+    'VEHICLE_ALREADY_ASSIGNED'
+  );
+
+  const replaced = await call('POST', `/admin/vehicles/${v.id}/assign-driver`, {
+    driverProfileId: b.id,
+    replace: true,
+    reason: 'Driver called in sick',
+  });
+  equal('with `replace` the swap succeeds', replaced.status, 201);
+
+  const afterSwap = await call('GET', `/admin/vehicles/${v.id}`);
+  equal(
+    'the vehicle shows the NEW driver',
+    afterSwap.data?.vehicle?.currentAssignment?.driver?.id,
+    b.id
+  );
+
+  // The displaced driver must be free, not stranded on a released assignment.
+  const freed = await call('POST', `/admin/vehicles/${other.data.vehicle.id}/assign-driver`, {
+    driverProfileId: a.id,
+  });
+  equal('the displaced driver is free to take another vehicle', freed.status, 201);
+
+  const history = await call('GET', `/admin/vehicles/${v.id}/history`);
+  check(
+    'the swap left BOTH assignments in history — it is append-only',
+    (history.data?.assignments ?? []).length >= 2,
+    `${(history.data?.assignments ?? []).length} record(s)`
+  );
+
+  // --- Dip reading ----------------------------------------------------------
+  section('DIP READING CLEARS STALE FUEL');
+
+  // The vehicle was created with no stock and never verified.
+  const stale = await call('GET', `/admin/vehicles/${v.id}`);
+  const before = stale.data?.vehicle?.inventory?.currentQuantity ?? '0';
+
+  const agreeing = await call('POST', `/admin/vehicles/${v.id}/dip-reading`, {
+    observedQuantity: before,
+  });
+
+  equal('a dip that agrees returns 200', agreeing.status, 200);
+  equal('and posts NO adjustment — there was no movement', agreeing.data?.adjustment, null);
+  equal('variance is zero', agreeing.data?.variance, '0.000');
+  check(
+    'the staleness deadline moved forward',
+    Boolean(agreeing.data?.inventory?.staleAfter) &&
+      new Date(agreeing.data.inventory.staleAfter) > new Date(),
+    `staleAfter=${agreeing.data?.inventory?.staleAfter}`
+  );
+
+  const cleared = await call('GET', `/admin/vehicles/${v.id}`);
+  check(
+    'FUEL_STATE_STALE is gone',
+    !(cleared.data?.vehicle?.dispatchability?.blockers ?? []).includes('FUEL_STATE_STALE'),
+    (cleared.data?.vehicle?.dispatchability?.blockers ?? []).join(', ') || 'no blockers'
+  );
+
+  const varied = await call('POST', `/admin/vehicles/${v.id}/dip-reading`, {
+    observedQuantity: '25.000',
+    notes: 'Monthly dip',
+  });
+
+  equal('a dip that differs returns 200', varied.status, 200);
+  check('and posts an adjustment', Boolean(varied.data?.adjustment), JSON.stringify(varied.data?.adjustment)?.slice(0, 120));
+  equal('the variance is reported', varied.data?.variance, '25.000');
+  equal('the reason code marks it as a dip', varied.data?.adjustment?.reasonCode, 'DIP_VARIANCE');
+  equal('the level becomes what was observed', varied.data?.inventory?.currentQuantity, '25');
+
+  const overfull = await call('POST', `/admin/vehicles/${v.id}/dip-reading`, {
+    observedQuantity: '99999',
+  });
+  equal('more than the tank holds is refused', overfull.code, 'EXCEEDS_CAPACITY');
+
+  // --- Return a vehicle to service -----------------------------------------
+  section('UNBLOCK A VEHICLE');
+
+  const toMaintenance = await call('PATCH', `/admin/vehicles/${v.id}`, {
+    status: 'MAINTENANCE',
+  });
+  equal('a vehicle can be taken off the road', toMaintenance.status, 200);
+
+  const blocked = await call('GET', `/admin/vehicles/${v.id}`);
+  check(
+    'which blocks dispatch',
+    (blocked.data?.vehicle?.dispatchability?.blockers ?? []).includes('VEHICLE_NOT_ACTIVE'),
+    (blocked.data?.vehicle?.dispatchability?.blockers ?? []).join(', ')
+  );
+
+  const backInService = await call('PATCH', `/admin/vehicles/${v.id}`, { status: 'ACTIVE' });
+  equal('and returned to service', backInService.status, 200);
+
+  const unblocked = await call('GET', `/admin/vehicles/${v.id}`);
+  check(
+    'clearing the block again',
+    !(unblocked.data?.vehicle?.dispatchability?.blockers ?? []).includes('VEHICLE_NOT_ACTIVE'),
+    (unblocked.data?.vehicle?.dispatchability?.blockers ?? []).join(', ') || 'no blockers'
+  );
+
+  // --- Revoke a suspension --------------------------------------------------
+  section('REVOKE A SUSPENSION');
+
+  const suspend = await call('PATCH', `/admin/drivers/${a.id}`, {
+    employmentStatus: 'SUSPENDED',
+  });
+  equal('a driver can be suspended', suspend.status, 200);
+  equal('and reads back as suspended', suspend.data?.driver?.employmentStatus, 'SUSPENDED');
+
+  const reinstate = await call('PATCH', `/admin/drivers/${a.id}`, {
+    employmentStatus: 'ACTIVE',
+  });
+  equal('the suspension can be revoked', reinstate.status, 200);
+  equal('and they are active again', reinstate.data?.driver?.employmentStatus, 'ACTIVE');
+
   // --- What the drivers list shows -----------------------------------------
   section('THE ADMIN LIST');
 

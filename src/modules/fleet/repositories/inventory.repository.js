@@ -1,3 +1,4 @@
+import { env } from '../../../config/env.js';
 import { prisma } from '../../../infrastructure/database/prisma.js';
 
 /**
@@ -133,11 +134,53 @@ export const postAdjustment = async ({
         // A human just looked at the tank, so the figure is freshly verified.
         lastSource: source,
         lastVerifiedAt: new Date(),
+        /**
+         * PUSH THE STALENESS DEADLINE FORWARD TOO.
+         *
+         * `staleAfter` was read by `dispatchability` but written by nothing
+         * except the seed, so once a vehicle's window lapsed it was
+         * FUEL_STATE_STALE permanently — every tanker in the fleet showed
+         * "Fuel level unverified" and no action in the product could clear it.
+         * Verifying a level and not extending its validity is only half the
+         * operation.
+         */
+        staleAfter: staleDeadline(),
         version: { increment: 1 },
       },
     });
 
     return adjustment;
+  });
+
+/** Now plus the configured trust window. */
+const staleDeadline = () =>
+  new Date(Date.now() + env.INVENTORY_STALE_AFTER_HOURS * 3_600_000);
+
+/**
+ * Confirm the level WITHOUT moving it.
+ *
+ * A dip that agrees with the recorded figure posts no adjustment — there is no
+ * movement to record, and inventing a zero-quantity one would put noise in the
+ * ledger an auditor has to read past. What it does do is restate that a human
+ * looked, which is the whole point: the stock was never in doubt, its
+ * freshness was.
+ */
+export const markVerified = async ({ vehicleId, source = 'DIP' }) =>
+  prisma.vehicleInventory.update({
+    where: { vehicleId },
+    data: {
+      lastSource: source,
+      lastVerifiedAt: new Date(),
+      staleAfter: staleDeadline(),
+      version: { increment: 1 },
+    },
+    select: {
+      vehicleId: true,
+      currentQuantity: true,
+      lastSource: true,
+      lastVerifiedAt: true,
+      staleAfter: true,
+    },
   });
 
 export const listAdjustments = async ({ vehicleId, limit, cursor }) =>
