@@ -61,14 +61,29 @@ export const findById = async (id) =>
 export const findByIdBasic = async (id) =>
   prisma.vehicle.findUnique({ where: { id }, select: VEHICLE_FIELDS });
 
+/**
+ * ONE `status` CLAUSE, CHOSEN — never two spreads onto the same key.
+ *
+ * This was written as `{ ...(status ? { status } : {}), ...(includeRetired ? {}
+ * : { status: { not: 'RETIRED' } }) }`, and the second spread silently
+ * overwrote the first: with `includeRetired` false (the default) an explicit
+ * `?status=INACTIVE` was replaced by `not RETIRED`, so every filter chip in the
+ * admin panel returned the same unfiltered list. Object spread has no collision
+ * warning, and both halves read correctly on their own.
+ *
+ * An explicit status wins outright, including RETIRED — a caller asking for
+ * retired vehicles by name has already said what they want, and the default
+ * exclusion exists for the caller who said nothing.
+ */
 export const list = async ({ status, includeRetired, limit, cursor }) =>
   prisma.vehicle.findMany({
-    where: {
-      ...(status ? { status } : {}),
-      // Retired vehicles are excluded by default: they are soft-deleted, and a
-      // fleet list that includes them is mostly history.
-      ...(includeRetired ? {} : { status: { not: 'RETIRED' } }),
-    },
+    where: status
+      ? { status }
+      : // Retired vehicles are excluded by default: they are soft-deleted, and
+        // a fleet list that includes them is mostly history.
+        includeRetired
+        ? {}
+        : { status: { not: 'RETIRED' } },
     select: { ...WITH_INVENTORY, assignments: ACTIVE_ASSIGNMENT },
     orderBy: { vehicleNumber: 'asc' },
     take: limit,
