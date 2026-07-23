@@ -36,7 +36,8 @@
     "seed:pricing": "node scripts/seed-pricing.js",
     "verify:driver": "node scripts/verify-driver-flow.mjs",
     "verify:customer": "node scripts/verify-customer-flow.mjs",
-    "verify:onboarding": "node scripts/verify-driver-onboarding.mjs"
+    "verify:onboarding": "node scripts/verify-driver-onboarding.mjs",
+    "verify:fleet": "node scripts/verify-fleet-admin.mjs"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
