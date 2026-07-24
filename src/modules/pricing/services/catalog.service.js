@@ -76,6 +76,36 @@ export const listProducts = async ({ includeArchived = false } = {}) => {
   return { products: products.map(toPublicProduct) };
 };
 
+/**
+ * What a CUSTOMER may order, in display order.
+ *
+ * Exists because the apps previously had no way to learn a product id at all:
+ * the only listing was `GET /admin/pricing/products`, behind an admin
+ * permission, so the customer app had to be COMPILED with the id baked in via
+ * `--dart-define=FUEL_PRODUCT_ID`. An APK built for one environment then failed
+ * against another, because product ids differ per database — which is exactly
+ * how a build ended up telling customers "this build has no fuel product
+ * configured" when they pressed Get price.
+ *
+ * ACTIVE only, and a deliberately thin projection: a customer has no business
+ * knowing display order, audit columns or archive state.
+ */
+export const listOrderableProducts = async () => {
+  const products = await pricingRepository.listProducts({ includeArchived: false });
+
+  return {
+    products: products
+      .filter((product) => product.status === CATALOG_STATUS.ACTIVE)
+      .map((product) => ({
+        id: product.id,
+        code: product.code,
+        name: product.name,
+        description: product.description,
+        unit: product.unit,
+      })),
+  };
+};
+
 export const createProduct = async ({ actorUserId, ...input }) => {
   const existing = await pricingRepository.findProductByCode(input.code);
 

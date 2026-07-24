@@ -198,12 +198,38 @@ async function main() {
   // --- 4. Quote --------------------------------------------------------------
   section('4. Quote (Quote.fromJson, QuoteLine.fromJson)');
 
+  // The app DISCOVERS the product rather than being compiled with its id.
+  //
+  // There was no customer-facing product listing at all — only
+  // `GET /admin/pricing/products` — so the app had to be built with
+  // `--dart-define=FUEL_PRODUCT_ID`. Ids differ per database, so an APK built
+  // for one environment told customers "this build has no fuel product
+  // configured" the moment it was pointed at another.
+  const catalogue = await call('GET', '/products', { token });
+  equal('GET /products returns 200 for a customer', catalogue.status, 200);
+
+  const listed = catalogue.data?.products ?? [];
+  check('it lists at least one orderable product', listed.length > 0, 'empty catalogue');
+  check(
+    'each carries the id the quote needs, and a name to show',
+    listed.every((p) => Boolean(p.id) && Boolean(p.name) && Boolean(p.code)),
+    JSON.stringify(listed[0])
+  );
+  check(
+    'and nothing archived or inactive is offered',
+    listed.every((p) => p.status === undefined && p.isArchived === undefined),
+    'admin-only fields leaked into the customer projection'
+  );
+
+  const anonymous = await call('GET', '/products');
+  equal('the catalogue still requires a session', anonymous.status, 401);
+
   const product = await prisma.fuelProduct.findUnique({
     where: { code: 'HSD' },
     select: { id: true },
   });
 
-  console.log(`  (FUEL_PRODUCT_ID = ${product.id})`);
+  equal('the listed product is the one a quote resolves', listed[0]?.id, product.id);
 
   const tooSmall = await call('POST', '/quotes', {
     token,

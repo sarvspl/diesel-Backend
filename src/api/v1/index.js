@@ -12,6 +12,7 @@ import identityRoutes from '../../modules/identity/identity.routes.js';
 import orderAdminRoutes from '../../modules/order/order.admin.routes.js';
 import orderRoutes from '../../modules/order/order.routes.js';
 import pricingAdminRoutes from '../../modules/pricing/pricing.admin.routes.js';
+import catalogRoutes from '../../modules/pricing/catalog.routes.js';
 import pricingRoutes from '../../modules/pricing/pricing.routes.js';
 import { apiRateLimiter } from '../../shared/middleware/rate-limit.js';
 
@@ -55,6 +56,9 @@ router.use('/auth', identityRoutes);
 router.use('/customers', customerRoutes);
 router.use('/corporates', corporateRoutes);
 router.use('/quotes', pricingRoutes);
+// What a customer may order. Lets the apps DISCOVER the product instead of
+// being compiled with its id.
+router.use('/products', catalogRoutes);
 router.use('/orders', orderRoutes);
 /**
  * The driver app. Its own prefix, gated on the DRIVER principal, and scoped
