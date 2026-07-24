@@ -38,6 +38,7 @@ const toPublicPrice = (price) => ({
   productId: price.productId,
   productCode: price.product?.code ?? undefined,
   city: price.city,
+  pincode: price.pincode,
   pricePerUnit: price.pricePerUnit.toString(),
   effectiveFrom: price.effectiveFrom,
   effectiveUntil: price.effectiveUntil,
@@ -106,6 +107,7 @@ export const publishPrice = async ({
   actorUserId,
   productId,
   city,
+  pincode,
   pricePerUnit,
   effectiveFrom,
   notes,
@@ -137,7 +139,14 @@ export const publishPrice = async ({
     );
   }
 
-  const current = await pricingRepository.findActivePrice({ productId, city });
+  // EXACT scope, not the resolved price. Publishing a PIN-code rate must
+  // supersede the previous PIN-code rate — not the city rate that other
+  // addresses still rely on — and the sanity band must compare like with like.
+  const current = await pricingRepository.findActivePriceForScope({
+    productId,
+    city: city ?? null,
+    pincode: pincode ?? null,
+  });
   const changePercent = changePercentFrom(current?.pricePerUnit ?? null, pricePerUnit);
 
   const outOfBand =
@@ -147,7 +156,8 @@ export const publishPrice = async ({
   const price = await pricingRepository.publishPrice({
     data: {
       productId,
-      city,
+      city: city ?? null,
+      pincode: pincode ?? null,
       pricePerUnit,
       effectiveFrom: effectiveAt,
       // An out-of-band price is parked; it must not close off the live one
@@ -228,9 +238,10 @@ export const updatePriceStatus = async ({ id, actorUserId, status, actorPermissi
 
     // Close off whatever is live before this one goes live, or the EXCLUDE
     // constraint will reject the activation.
-    const current = await pricingRepository.findActivePrice({
+    const current = await pricingRepository.findActivePriceForScope({
       productId: price.productId,
       city: price.city,
+      pincode: price.pincode,
     });
 
     if (current && current.id !== price.id) {

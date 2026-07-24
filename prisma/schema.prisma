@@ -1317,7 +1317,17 @@ model FuelPrice {
   /// BR-601: prices are per product PER CITY. Single-city at launch, but the
   /// dimension exists now so multi-city (docs/12 §4.8) is data rather than a
   /// migration of a table that quotes and orders already reference.
-  city String @db.VarChar(120)
+  /// Nullable since PIN-code scoping arrived: a price scoped to a PIN code, or
+  /// a single national rate, has no city to name.
+  city String? @db.VarChar(120)
+
+  /// PIN code this price covers. Beats `city` when both match.
+  ///
+  /// The city on an address is whatever the customer's phone geocoded — the
+  /// same site arrives as "Chakpachuria", "New Town" or "Kolkata" — so a price
+  /// keyed on it matches only by luck, and the customer is told we do not
+  /// deliver to them. Six digits do not have that problem.
+  pincode String? @db.VarChar(6)
 
   /// The tax-INCLUSIVE retail rate - what the customer pays at the pump
   /// (BR-705). Tax is extracted from it, never added to it.
@@ -1352,6 +1362,7 @@ model FuelPrice {
   orders Order[]
 
   @@index([productId, city, status, effectiveFrom])
+  @@index([productId, pincode, status, effectiveFrom])
   @@index([effectiveFrom])
   @@map("fuel_prices")
 }

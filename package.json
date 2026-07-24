@@ -38,7 +38,8 @@
     "verify:customer": "node scripts/verify-customer-flow.mjs",
     "verify:onboarding": "node scripts/verify-driver-onboarding.mjs",
     "verify:fleet": "node scripts/verify-fleet-admin.mjs",
-    "verify:corporate": "node scripts/verify-corporate-onboarding.mjs"
+    "verify:corporate": "node scripts/verify-corporate-onboarding.mjs",
+    "verify:pricing": "node scripts/verify-price-scoping.mjs"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",

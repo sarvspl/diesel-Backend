@@ -133,8 +133,18 @@ export const listPricesSchema = {
 export const createPriceSchema = {
   body: z.object({
     productId: uuid('Product id'),
-    /** BR-601: prices are per product per city. */
-    city: z.string().trim().min(1).max(120),
+    /**
+     * BR-601: prices are per product per place. Both scopes are optional and a
+     * price with neither is the national default; a PIN code beats a city when
+     * both match, because six digits mean the same thing on every device while
+     * a geocoded city does not.
+     */
+    city: z.string().trim().min(1).max(120).optional(),
+    pincode: z
+      .string()
+      .trim()
+      .regex(/^[1-9]\d{5}$/, 'Must be a 6-digit Indian PIN code')
+      .optional(),
     /** The tax-INCLUSIVE retail rate (BR-705). */
     pricePerUnit,
     /**

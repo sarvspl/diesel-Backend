@@ -26,6 +26,7 @@ const PRICE_FIELDS = {
   id: true,
   productId: true,
   city: true,
+  pincode: true,
   pricePerUnit: true,
   effectiveFrom: true,
   effectiveUntil: true,
@@ -116,15 +117,54 @@ export const updateProduct = async ({ id, data, actorUserId }) =>
  * upper bound would make the changeover instant belong to two versions, which
  * is exactly the ambiguity the EXCLUDE constraint forbids.
  */
-export const findActivePrice = async ({ productId, city, at = new Date() }) =>
+const liveWhere = (productId, at) => ({
+  productId,
+  status: 'ACTIVE',
+  effectiveFrom: { lte: at },
+  OR: [{ effectiveUntil: null }, { effectiveUntil: { gt: at } }],
+});
+
+/**
+ * The price that governs one order. MOST SPECIFIC WINS: pincode, then city,
+ * then a rate with neither, which is the national default.
+ *
+ * Pincode is tried first for the same reason the delivery rule does it: the
+ * `city` on an address is whatever the customer's phone geocoded, so a price
+ * scoped to a city an operator typed matches only when the two happen to agree.
+ * That mismatch is invisible — the customer is simply told we do not deliver to
+ * their address.
+ */
+export const findActivePrice = async ({ productId, city, pincode, at = new Date() }) => {
+  const candidates = await prisma.fuelPrice.findMany({
+    where: liveWhere(productId, at),
+    select: PRICE_FIELDS,
+    orderBy: { effectiveFrom: 'desc' },
+  });
+
+  return (
+    (pincode ? candidates.find((price) => price.pincode === pincode) : undefined) ??
+    (city ? candidates.find((price) => price.pincode === null && price.city === city) : undefined) ??
+    candidates.find((price) => price.pincode === null && price.city === null) ??
+    null
+  );
+};
+
+/**
+ * The live price for EXACTLY this scope.
+ *
+ * Publishing supersedes the price it replaces, and that must be the one with
+ * the same scope — publishing a PIN-code rate must not close off the city rate
+ * that other addresses still depend on, and the change-percentage sanity check
+ * must compare like with like.
+ */
+export const findActivePriceForScope = async ({
+  productId,
+  city = null,
+  pincode = null,
+  at = new Date(),
+}) =>
   prisma.fuelPrice.findFirst({
-    where: {
-      productId,
-      city,
-      status: 'ACTIVE',
-      effectiveFrom: { lte: at },
-      OR: [{ effectiveUntil: null }, { effectiveUntil: { gt: at } }],
-    },
+    where: { ...liveWhere(productId, at), city, pincode },
     select: PRICE_FIELDS,
     orderBy: { effectiveFrom: 'desc' },
   });

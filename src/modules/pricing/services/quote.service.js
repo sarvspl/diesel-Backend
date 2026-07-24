@@ -105,13 +105,23 @@ export const createQuote = async ({ userId, addressId, productId, quantity }) =>
   const price = await pricingRepository.findActivePrice({
     productId,
     city: address.city,
+    // Preferred over the city, which is only ever as good as the geocoder that
+    // filled it in on the customer's phone.
+    pincode: address.pincode,
   });
 
   if (!price) {
-    throw new ConflictError(`No price is configured for ${product.name} in ${address.city}`, {
-      code: ERROR_CODES.NO_ACTIVE_PRICE,
-      details: { productCode: product.code, city: address.city },
-    });
+    // Names BOTH scopes an operator could have published under, because the
+    // message is the whole diagnosis: someone reading it needs to know which
+    // values were looked for, and a city alone sent people publishing for
+    // "Kolkata" when the address said "Chakpachuria".
+    throw new ConflictError(
+      `No price is configured for ${product.name} at PIN ${address.pincode} (${address.city})`,
+      {
+        code: ERROR_CODES.NO_ACTIVE_PRICE,
+        details: { productCode: product.code, city: address.city, pincode: address.pincode },
+      }
+    );
   }
 
   const qty = toDecimal(quantity);
