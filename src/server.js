@@ -1,5 +1,6 @@
 import { createApp, API_V1_PREFIX } from './app.js';
 import { env, isProduction } from './config/env.js';
+import { findPendingMigrations } from './infrastructure/database/migration-status.js';
 import { connectDatabase, disconnectDatabase } from './infrastructure/database/prisma.js';
 import { beginShutdown } from './shared/lifecycle.js';
 import { logger } from './shared/logger/index.js';
@@ -16,6 +17,22 @@ let server;
  */
 const start = async () => {
   await connectDatabase();
+
+  // A schema behind the code is invisible until the first write 500s at a real
+  // customer. Said once, loudly, at the only moment anyone is watching a deploy.
+  //
+  // Logged rather than fatal ON PURPOSE: some pipelines run migrations as a
+  // release step that follows the container starting, and refusing to boot
+  // would turn "one endpoint is broken" into "the site is down". The remedy is
+  // in the message so nobody has to go and look it up.
+  const migrations = await findPendingMigrations();
+
+  if (migrations.pending.length > 0) {
+    logger.error(
+      { pendingMigrations: migrations.pending },
+      'DATABASE SCHEMA IS OUT OF DATE: writes touching new columns will fail with a 500. Run `npx prisma migrate deploy` and restart'
+    );
+  }
 
   // Impossible to miss in a terminal, and impossible to explain away in a log.
   // Deliberately `error` level in production: on a public host this is not a
