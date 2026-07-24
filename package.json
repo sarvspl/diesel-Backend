@@ -37,7 +37,8 @@
     "verify:driver": "node scripts/verify-driver-flow.mjs",
     "verify:customer": "node scripts/verify-customer-flow.mjs",
     "verify:onboarding": "node scripts/verify-driver-onboarding.mjs",
-    "verify:fleet": "node scripts/verify-fleet-admin.mjs"
+    "verify:fleet": "node scripts/verify-fleet-admin.mjs",
+    "verify:corporate": "node scripts/verify-corporate-onboarding.mjs"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
