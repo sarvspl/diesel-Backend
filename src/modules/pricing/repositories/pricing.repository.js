@@ -64,6 +64,7 @@ const DELIVERY_FIELDS = {
   name: true,
   chargeType: true,
   city: true,
+  pincode: true,
   flatCharge: true,
   minQuantity: true,
   maxQuantity: true,
@@ -248,7 +249,21 @@ export const updateTaxRule = async ({ id, data, actorUserId }) =>
  * `priority` wins - so precedence is explicit rather than dependent on
  * insertion order (BR-608, and the same determinism BR-503 requires of zones).
  */
-export const findApplicableDeliveryRule = async ({ city, quantity, at = new Date() }) => {
+/**
+ * The rule that governs one order.
+ *
+ * MOST SPECIFIC WINS: pincode, then city, then the unscoped fallback.
+ *
+ * Pincode is checked first because it is the only one of the three that is
+ * reliable. The `city` on an address is whatever the customer's phone geocoded
+ * — the same site can come back "Chakpachuria", "New Town" or "Kolkata" — so a
+ * rule scoped to a city an operator typed matches only by luck. Six digits do
+ * not have that problem.
+ *
+ * Within a tier the ordering is already applied by the query: lowest priority
+ * number first, newest as the tie-break.
+ */
+export const findApplicableDeliveryRule = async ({ city, pincode, quantity, at = new Date() }) => {
   const candidates = await prisma.deliveryChargeRule.findMany({
     where: {
       status: 'ACTIVE',
@@ -262,15 +277,20 @@ export const findApplicableDeliveryRule = async ({ city, quantity, at = new Date
   });
 
   return (
-    candidates.find((rule) => rule.city === city) ??
-    candidates.find((rule) => rule.city === null) ??
+    (pincode ? candidates.find((rule) => rule.pincode === pincode) : undefined) ??
+    candidates.find((rule) => rule.pincode === null && rule.city === city) ??
+    candidates.find((rule) => rule.pincode === null && rule.city === null) ??
     null
   );
 };
 
-export const listDeliveryRules = async ({ city, status } = {}) =>
+export const listDeliveryRules = async ({ city, pincode, status } = {}) =>
   prisma.deliveryChargeRule.findMany({
-    where: { ...(city ? { city } : {}), ...(status ? { status } : {}) },
+    where: {
+      ...(city ? { city } : {}),
+      ...(pincode ? { pincode } : {}),
+      ...(status ? { status } : {}),
+    },
     select: DELIVERY_FIELDS,
     orderBy: [{ priority: 'asc' }, { minQuantity: 'asc' }],
   });

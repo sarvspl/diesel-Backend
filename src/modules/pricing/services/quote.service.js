@@ -119,6 +119,9 @@ export const createQuote = async ({ userId, addressId, productId, quantity }) =>
 
   const deliveryRule = await pricingRepository.findApplicableDeliveryRule({
     city: address.city,
+    // Preferred over the city when a rule is scoped to it: the pincode is the
+    // one part of an address that means the same thing on every device.
+    pincode: address.pincode,
     quantity: qty,
   });
 

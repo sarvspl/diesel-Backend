@@ -1427,6 +1427,17 @@ model DeliveryChargeRule {
   /// Null means "applies everywhere". Scoping is by city until zones exist.
   city String? @db.VarChar(120)
 
+  /// PIN code this rule covers. Null means it is not pincode-scoped.
+  ///
+  /// More precise AND more reliable than `city`. A city is free text that the
+  /// customer's phone geocoded, so the same site resolves to "Chakpachuria",
+  /// "New Town" or "Kolkata" depending on the device, and a rule keyed on it
+  /// silently covers nothing. A PIN code is six digits with one meaning.
+  ///
+  /// Resolution order is pincode, then city, then the unscoped fallback: the
+  /// most specific rule wins.
+  pincode String? @db.VarChar(6)
+
   /// The flat amount. Tax-EXCLUSIVE: GST is added on top (BR-705).
   flatCharge Decimal @map("flat_charge") @db.Decimal(14, 2)
 
@@ -1459,6 +1470,7 @@ model DeliveryChargeRule {
   updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@index([status, city, priority])
+  @@index([status, pincode, priority])
   @@map("delivery_charge_rules")
 }
 

@@ -235,6 +235,7 @@ export const updateTaxSchema = {
 export const listDeliveryChargesSchema = {
   query: z.object({
     city: z.string().trim().max(120).optional(),
+    pincode: z.string().trim().max(6).optional(),
     status: z.enum(Object.values(CATALOG_STATUS)).optional(),
   }),
 };
@@ -247,6 +248,15 @@ export const createDeliveryChargeSchema = {
       chargeType: z.enum(Object.values(DELIVERY_CHARGE_TYPE)).default(DELIVERY_CHARGE_TYPE.FLAT),
       /** Null/absent means the rule is the global default. */
       city: z.string().trim().max(120).optional(),
+      /**
+       * Scope to one PIN code. Beats `city` when both match, because six digits
+       * mean the same thing on every device while a geocoded city does not.
+       */
+      pincode: z
+        .string()
+        .trim()
+        .regex(/^[1-9]\d{5}$/, 'Must be a 6-digit Indian PIN code')
+        .optional(),
       /** Tax-EXCLUSIVE: GST is added on top (BR-702). */
       flatCharge: money('Flat charge', { allowZero: true }),
       minQuantity: quantity('Minimum quantity', { allowZero: true }).default('0'),

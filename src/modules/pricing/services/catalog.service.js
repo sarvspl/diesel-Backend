@@ -54,6 +54,7 @@ const toPublicDeliveryRule = (rule) => ({
   name: rule.name,
   chargeType: rule.chargeType,
   city: rule.city,
+  pincode: rule.pincode,
   flatCharge: toMoneyString(rule.flatCharge),
   minQuantity: toQuantityString(rule.minQuantity),
   maxQuantity: rule.maxQuantity === null ? null : toQuantityString(rule.maxQuantity),
