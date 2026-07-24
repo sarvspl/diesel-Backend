@@ -3,6 +3,7 @@ import {
   CORPORATE_VERIFICATION_STATUS,
 } from '../../../shared/constants/corporate.js';
 import { ERROR_CODES } from '../../../shared/constants/error-codes.js';
+import { ForbiddenError } from '../../../shared/errors/index.js';
 import { registerAccountGate } from '../../identity/services/account-gate.js';
 import * as corporateRepository from '../repositories/corporate.repository.js';
 
@@ -42,7 +43,7 @@ import * as corporateRepository from '../repositories/corporate.repository.js';
  * @param {Array<{corporateAccount: {verificationStatus: string, accountStatus: string}}>} memberships
  * @returns {{code: string, message: string}|null}
  */
-export const decideCorporateAccess = (memberships) => {
+const blockingReason = (memberships) => {
   if (memberships.length === 0) return null;
 
   const usable = memberships.find(
@@ -98,6 +99,34 @@ export const decideCorporateAccess = (memberships) => {
 };
 
 /**
+ * May they SIGN IN?
+ *
+ * Everything blocks except a REJECTION, which the applicant is expected to fix
+ * themselves (BR-206: a rejected company may re-apply). Locking them out was a
+ * dead end — the reason they were rejected is usually a typo in their own
+ * details, and the only way to correct it was a phone call.
+ *
+ * Signing in is NOT permission to buy. A rejected company still cannot place an
+ * order; see `decideCorporateOrdering`, which the order path enforces.
+ */
+export const decideCorporateAccess = (memberships) => {
+  const reason = blockingReason(memberships);
+  if (reason?.code === ERROR_CODES.CORPORATE_VERIFICATION_REJECTED) return null;
+  return reason;
+};
+
+/**
+ * May they ORDER?
+ *
+ * Only an APPROVED + ACTIVE company. This is the rule verification exists for,
+ * and until now NOTHING enforced it: the login gate was the sole obstacle, so
+ * anyone who could sign in could buy. That was safe only while every
+ * unapproved member was locked out, and it stopped being safe the moment
+ * rejected applicants were let in to fix their details.
+ */
+export const decideCorporateOrdering = (memberships) => blockingReason(memberships);
+
+/**
  * The gate Identity calls: fetch, then decide.
  *
  * Errors are NOT caught here. An unavailable database must fail the login
@@ -106,6 +135,22 @@ export const decideCorporateAccess = (memberships) => {
  */
 export const corporateLoginGate = async (user) =>
   decideCorporateAccess(await corporateRepository.findActiveMembershipsForUser(user.id));
+
+/**
+ * The same question at ORDER time, for a user id.
+ *
+ * Errors are not caught, for the same reason: "could not check" must not read
+ * as "allowed to buy".
+ */
+export const assertMayOrder = async (userId) => {
+  const reason = decideCorporateOrdering(
+    await corporateRepository.findActiveMembershipsForUser(userId)
+  );
+
+  if (reason) {
+    throw new ForbiddenError(reason.message, { code: reason.code });
+  }
+};
 
 /**
  * Install the gate.

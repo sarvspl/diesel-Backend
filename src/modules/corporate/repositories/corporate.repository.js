@@ -161,6 +161,48 @@ export const recordVerificationDecision = async ({
   });
 
 /**
+ * Re-application after a rejection (BR-206).
+ *
+ * The corrected details and the return to PENDING are written together: an
+ * account whose details changed without re-entering review would sit rejected
+ * with data nobody ever looked at, and one that re-entered review without the
+ * corrections would be re-rejected for the same reason.
+ *
+ * The rejection record is NOT touched. History is append-only (BR-207) — the
+ * reviewer must still be able to see what was wrong last time, which is most of
+ * what makes the second review quick.
+ */
+export const resubmitRegistration = async ({ corporateAccountId, account }) =>
+  prisma.$transaction(async (tx) => {
+    await tx.corporateVerificationRecord.create({
+      data: {
+        corporateAccountId,
+        fromStatus: 'REJECTED',
+        toStatus: 'PENDING',
+        reasonCode: 'APPLICANT_RESUBMITTED',
+        applicantNote: null,
+        adminNote: null,
+        // Null on purpose: nobody REVIEWED this. A rejected-to-pending record
+        // with no reviewer is unambiguously the applicant re-applying, whereas
+        // writing their id into a column named `reviewedByUserId` would read as
+        // the applicant approving themselves.
+        reviewedByUserId: null,
+      },
+    });
+
+    return tx.corporateAccount.update({
+      where: { id: corporateAccountId },
+      data: {
+        ...account,
+        verificationStatus: 'PENDING',
+        // Still INACTIVE: re-entering review is not approval.
+        accountStatus: 'INACTIVE',
+      },
+      select: ACCOUNT_FIELDS,
+    });
+  });
+
+/**
  * Verification history for an account.
  *
  * `adminNote` is excluded from the default projection. It is internal and must

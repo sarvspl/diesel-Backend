@@ -9,6 +9,12 @@ import * as corporateRepository from '../repositories/corporate.repository.js';
 
 const log = createLogger({ module: 'corporate.account' });
 
+/** Who may re-apply on the company's behalf after a rejection. */
+const RESUBMIT_ROLES = [
+  CORPORATE_MEMBER_ROLE.CORPORATE_OWNER,
+  CORPORATE_MEMBER_ROLE.CORPORATE_ADMIN,
+];
+
 /**
  * Corporate account registration and self-service reads.
  *
@@ -112,6 +118,103 @@ export const registerCorporate = async ({ userId, ...input }) => {
     nextStep: 'AWAITING_ADMIN_REVIEW',
     message:
       'Your registration is under review. You will not be able to sign in again until it is approved.',
+  };
+};
+
+/**
+ * Re-apply after a rejection (BR-206).
+ *
+ * A rejection is usually a correctable mistake in the applicant's own details —
+ * a mistyped GSTIN, a trading name where the registered one was wanted. Treating
+ * it as final made the only route back a phone call, so a rejected applicant can
+ * now sign in, fix what was wrong and send it back for review.
+ *
+ * They still cannot ORDER while rejected or pending; that is enforced on the
+ * order path (`assertMayOrder`), not by locking them out of the app.
+ */
+export const resubmitCorporate = async ({ userId, ...input }) => {
+  const memberships = await corporateRepository.findActiveMembershipsForUser(userId);
+
+  if (memberships.length === 0) {
+    throw new NotFoundError('This account does not belong to a company', {
+      code: ERROR_CODES.NOT_CORPORATE_MEMBER,
+    });
+  }
+
+  const [membership] = memberships;
+
+  // Only someone who can speak for the company may re-apply on its behalf. A
+  // VIEWER seeing the rejection is not authority to change the registered name.
+  if (!RESUBMIT_ROLES.includes(membership.role)) {
+    throw new ForbiddenError('Only a company owner or admin can resubmit this registration', {
+      code: ERROR_CODES.FORBIDDEN,
+    });
+  }
+
+  const account = await corporateRepository.findAccountById(membership.corporateAccountId);
+
+  if (account.verificationStatus !== CORPORATE_VERIFICATION_STATUS.REJECTED) {
+    throw new ConflictError(
+      account.verificationStatus === CORPORATE_VERIFICATION_STATUS.PENDING
+        ? 'This registration is already under review'
+        : 'This company is already approved',
+      { code: ERROR_CODES.CORPORATE_ALREADY_DECIDED }
+    );
+  }
+
+  // The identifier may be corrected — that is often the very thing that was
+  // wrong — but it must not collide with ANOTHER company.
+  const duplicate = await corporateRepository.findByRegistration({
+    registrationIdType: input.registrationIdType,
+    registrationNumber: input.registrationNumber,
+  });
+
+  if (duplicate && duplicate.id !== account.id) {
+    throw new ConflictError('A company is already registered with this identifier', {
+      code: ERROR_CODES.CORPORATE_ALREADY_REGISTERED,
+    });
+  }
+
+  // PATCH semantics, unlike registration: only what was sent is written.
+  //
+  // Registration starts from nothing, so an absent field means null. A
+  // re-application starts from a real record, and treating absent as null would
+  // silently wipe the billing address of an applicant who only came back to fix
+  // one digit of their GSTIN.
+  const OPTIONAL_FIELDS = [
+    'gstin',
+    'pan',
+    'billingLine1',
+    'billingLine2',
+    'billingCity',
+    'billingState',
+    'billingPincode',
+    'contactEmail',
+    'contactPhone',
+  ];
+
+  const updated = await corporateRepository.resubmitRegistration({
+    corporateAccountId: account.id,
+    account: {
+      legalName: input.legalName,
+      displayName: input.displayName ?? input.legalName,
+      registrationIdType: input.registrationIdType,
+      registrationNumber: input.registrationNumber,
+      ...Object.fromEntries(
+        OPTIONAL_FIELDS.filter((field) => input[field] !== undefined).map((field) => [
+          field,
+          input[field],
+        ])
+      ),
+    },
+  });
+
+  log.info({ userId, corporateAccountId: account.id }, 'corporate registration resubmitted');
+
+  return {
+    account: toPublicAccount(updated),
+    nextStep: 'AWAITING_ADMIN_REVIEW',
+    message: 'Your details have been sent back for review.',
   };
 };
 

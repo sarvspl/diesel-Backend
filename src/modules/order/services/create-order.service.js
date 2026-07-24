@@ -19,6 +19,7 @@ import {
 } from '../../../shared/errors/index.js';
 import { createLogger } from '../../../shared/logger/index.js';
 import { toMoneyString, toQuantityString } from '../../../shared/utils/money.js';
+import { assertMayOrder } from '../../corporate/services/corporate-gate.js';
 import * as reservationService from '../../dispatch/services/reservation.service.js';
 import * as outboxService from '../../platform/services/outbox.service.js';
 import { AGGREGATE, ORDER_EVENTS, orderEventPayload } from '../order.events.js';
@@ -132,6 +133,17 @@ export const createOrder = async ({
   acknowledgeDuplicate = false,
   requestId = null,
 }) => {
+  // --- 0. May this caller buy at all? ---------------------------------------
+  // Verification exists to stop an unverified company ordering, and until now
+  // the LOGIN gate was the only thing enforcing it — safe only while every
+  // unapproved member was locked out. Rejected applicants are now let in so
+  // they can correct their details (BR-206), so the rule is enforced here,
+  // where it actually belongs.
+  //
+  // Individuals are unaffected: the check has no opinion about a caller with no
+  // corporate membership.
+  await assertMayOrder(userId);
+
   // --- 1. Payment mode ------------------------------------------------------
   // Refused at the boundary rather than half-implemented. WALLET and
   // CORPORATE_CREDIT both require a HOLD against a balance, in modules that do

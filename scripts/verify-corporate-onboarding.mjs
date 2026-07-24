@@ -53,12 +53,13 @@ const equal = (label, actual, expected) =>
 
 const section = (title) => console.log(`\n[1m${title}[0m`);
 
-async function call(method, path, { body, token } = {}) {
+async function call(method, path, { body, token, headers = {} } = {}) {
   const response = await fetch(`${BASE}${path}`, {
     method,
     headers: {
       'content-type': 'application/json',
       ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...headers,
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
@@ -234,7 +235,7 @@ async function main() {
 
   const phoneC = nextPhone();
   const c = await signUpCustomer(phoneC, 'Rejected Applicant'); // send 1
-  const companyC = (await registerCompany(c.token, 'Dubious Traders LLP')).data?.account;
+  const companyC = (await registerCompany(c.token, "Dubious Traders LLP")).data?.account;
   check('a company is registered', Boolean(companyC?.id), 'registration failed');
 
   const APPLICANT_NOTE = 'The GSTIN does not match the legal name.';
@@ -246,9 +247,106 @@ async function main() {
   equal('an admin rejects', rejected.status, 200);
   equal('the company reads REJECTED', rejected.data?.account?.verificationStatus, 'REJECTED');
 
+  // A REJECTION IS NOT A DEAD END (BR-206).
+  //
+  // Rejection is usually a correctable mistake in the applicant's own details,
+  // and locking them out made a phone call the only way back. They can sign in
+  // — but signing in is not permission to buy.
   const afterReject = await signIn(phoneC); // send 2
-  equal('sign-in is refused', afterReject.status, 401);
-  equal('with a DIFFERENT code to pending', afterReject.code, 'CORPORATE_VERIFICATION_REJECTED');
+  equal('a rejected applicant CAN sign in, to fix it', afterReject.status, 200);
+
+  const rejectedToken = afterReject.data?.tokens?.accessToken;
+
+  // The quote id is deliberately bogus: the corporate guard runs FIRST, so a
+  // 403 here proves it refused before the order was ever considered. If the
+  // guard were missing, this would fail on the quote instead — a different code.
+  const orderAttempt = {
+    body: {
+      quoteId: '019f92c2-0000-7000-8000-000000000000',
+      paymentMode: 'CASH_ON_DELIVERY',
+    },
+    headers: { 'Idempotency-Key': `verify-rejected-${registrationSeed}` },
+  };
+
+  const blockedOrder = await call('POST', '/orders', { token: rejectedToken, ...orderAttempt });
+  equal('but they CANNOT place an order', blockedOrder.status, 403);
+  equal('  refused for the corporate reason', blockedOrder.code, 'CORPORATE_VERIFICATION_REJECTED');
+
+  // And the guard must not over-block: an individual gets past it and fails on
+  // the bogus quote, as they should.
+  const individualOrder = await call('POST', '/orders', {
+    token: b.token,
+    ...orderAttempt,
+    headers: { 'Idempotency-Key': `verify-individual-${registrationSeed}` },
+  });
+  check(
+    'an individual is NOT blocked by the corporate guard',
+    individualOrder.code !== 'CORPORATE_VERIFICATION_REJECTED' &&
+      individualOrder.code !== 'CORPORATE_VERIFICATION_PENDING',
+    `got ${individualOrder.status} ${individualOrder.code}`
+  );
+
+  // They can read their own company, which is how the app shows them why.
+  const rejectedView = await call('GET', '/corporates/me', { token: rejectedToken });
+  equal('they can read their own rejection', rejectedView.status, 200);
+  equal('  which reads REJECTED', rejectedView.data?.account?.verificationStatus, 'REJECTED');
+  const shownNote = (rejectedView.data?.verificationHistory ?? []).find(
+    (h) => h.toStatus === 'REJECTED'
+  )?.applicantNote;
+  equal('  carrying the reason to show them', shownNote, APPLICANT_NOTE);
+
+  // --- Re-apply with corrected details --------------------------------------
+  const resubmitted = await call('POST', '/corporates/me/resubmit', {
+    token: rejectedToken,
+    body: {
+      legalName: 'Dubious Traders LLP',
+      registrationIdType: 'GSTIN',
+      registrationNumber: companyC.registration.number,
+      billingCity: 'Kolkata',
+    },
+  });
+  equal('they can RESUBMIT for review', resubmitted.status, 200);
+  equal('  back to PENDING', resubmitted.data?.account?.verificationStatus, 'PENDING');
+  equal('  still INACTIVE', resubmitted.data?.account?.accountStatus, 'INACTIVE');
+  equal('  with the corrected details saved', resubmitted.data?.account?.billingAddress?.city, 'Kolkata');
+
+  // The rejection is NOT erased — history is append-only (BR-207), and the
+  // reviewer needs to see what was wrong last time.
+  const afterResubmit = await call('GET', `/admin/corporates/${companyC.id}`, {
+    token: adminToken,
+  });
+  const historyC =
+    afterResubmit.data?.account?.verificationHistory ?? afterResubmit.data?.verificationHistory ?? [];
+  check(
+    'the original rejection is retained in history',
+    historyC.some((h) => h.toStatus === 'REJECTED'),
+    JSON.stringify(historyC.map((h) => h.toStatus))
+  );
+  check(
+    'alongside the re-application',
+    historyC.some((h) => h.toStatus === 'PENDING' && h.reasonCode === 'APPLICANT_RESUBMITTED'),
+    JSON.stringify(historyC.map((h) => `${h.toStatus}/${h.reasonCode}`))
+  );
+
+  // It is back in the reviewer's queue.
+  const queue = await call('GET', '/admin/corporates?verificationStatus=PENDING&limit=100', {
+    token: adminToken,
+  });
+  check(
+    'and it is back in the pending queue',
+    (queue.data?.corporates ?? []).some((c) => c.id === companyC.id),
+    'not found in PENDING'
+  );
+
+  const resubmitAgain = await call('POST', '/corporates/me/resubmit', {
+    token: rejectedToken,
+    body: {
+      legalName: 'Dubious Traders LLP',
+      registrationIdType: 'GSTIN',
+      registrationNumber: companyC.registration.number,
+    },
+  });
+  equal('resubmitting while already pending is refused', resubmitAgain.status, 409);
 
   // The app prints the reviewer's note on its rejection screen, so the note
   // written FOR THE APPLICANT has to survive into the record it reads.

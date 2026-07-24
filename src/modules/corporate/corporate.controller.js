@@ -22,6 +22,21 @@ export const registerCorporate = async (req, res) => {
   return sendCreated(res, { message: 'Corporate registration submitted', data: result });
 };
 
+/**
+ * POST /api/v1/corporates/me/resubmit
+ *
+ * 200, not 201: the company already exists. This corrects it and puts it back
+ * in the queue (BR-206).
+ */
+export const resubmitCorporate = async (req, res) => {
+  const result = await corporateService.resubmitCorporate({
+    userId: req.auth.userId,
+    ...req.validated.body,
+  });
+
+  return sendSuccess(res, { message: 'Registration resubmitted for review', data: result });
+};
+
 /** GET /api/v1/corporates/me */
 export const getMyCorporate = async (req, res) => {
   const result = await corporateService.getMyCorporate(req.auth.userId);

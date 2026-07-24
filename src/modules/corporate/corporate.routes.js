@@ -37,6 +37,19 @@ router.post(
   controller.registerCorporate
 );
 
+/**
+ * Re-apply after a rejection (BR-206).
+ *
+ * Behind CORPORATE_REGISTER, the same permission that created the company:
+ * this is the same act, done again with corrected details.
+ */
+router.post(
+  '/me/resubmit',
+  requirePermission(PERMISSIONS.CORPORATE_REGISTER),
+  validate(registerCorporateSchema),
+  controller.resubmitCorporate
+);
+
 router.get('/me', requirePermission(PERMISSIONS.CORPORATE_READ_SELF), controller.getMyCorporate);
 
 router.get('/members', requirePermission(PERMISSIONS.CORPORATE_READ_SELF), controller.listMembers);
