@@ -15,6 +15,13 @@ export const listCustomersSchema = {
      */
     search: z.string().trim().min(1).max(120).optional(),
     status: z.enum(Object.values(USER_STATUS)).optional(),
+    /**
+     * Retail buyer or company member. Derived from an ACTIVE corporate
+     * membership, never from a flag on the profile — the membership is what
+     * actually governs ordering and the login gate, so anything else could
+     * disagree with it.
+     */
+    accountType: z.enum(['INDIVIDUAL', 'CORPORATE']).optional(),
   }),
 };
 

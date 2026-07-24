@@ -10,6 +10,38 @@ import { prisma } from '../../../infrastructure/database/prisma.js';
  * only from the admin router behind `customer.read.any`.
  */
 
+/**
+ * The company this customer orders for, if any.
+ *
+ * An operator looking at a list of customers cannot otherwise tell a retail
+ * buyer from someone ordering on a company account — they are the same row in
+ * `customer_profiles`, and what separates them is a membership over in the
+ * corporate module. Without this join the Customers screen can only show
+ * everyone identically, which is exactly how a pending corporate applicant
+ * looked like an ordinary signup.
+ *
+ * ACTIVE memberships only, and at most one: a removed member is soft-deleted so
+ * order attribution survives (BR-223), and a person belongs to one company.
+ */
+const MEMBERSHIP_SELECT = {
+  where: { status: 'ACTIVE' },
+  take: 1,
+  select: {
+    role: true,
+    corporateAccount: {
+      select: {
+        id: true,
+        legalName: true,
+        displayName: true,
+        registrationIdType: true,
+        registrationNumber: true,
+        verificationStatus: true,
+        accountStatus: true,
+      },
+    },
+  },
+};
+
 const LIST_FIELDS = {
   id: true,
   userId: true,
@@ -25,6 +57,7 @@ const LIST_FIELDS = {
       emailVerifiedAt: true,
       lastLoginAt: true,
       createdAt: true,
+      corporateMemberships: MEMBERSHIP_SELECT,
     },
   },
 };
@@ -48,11 +81,22 @@ const DETAIL_FIELDS = {
  * `mode: 'insensitive'` on name only - phone and email are already stored
  * normalised, and a case-insensitive match on them would forfeit the index.
  */
-const buildWhere = ({ search, status }) => {
+const buildWhere = ({ search, status, accountType }) => {
   const where = {};
 
   if (status) {
     where.user = { status };
+  }
+
+  // Retail buyer or company member. Expressed as the presence or absence of an
+  // ACTIVE membership rather than a flag on the profile, so it cannot drift
+  // from the membership that actually governs ordering and the login gate.
+  if (accountType === 'CORPORATE' || accountType === 'INDIVIDUAL') {
+    const membership = { some: { status: 'ACTIVE' } };
+    where.user = {
+      ...(where.user ?? {}),
+      corporateMemberships: accountType === 'CORPORATE' ? membership : { none: { status: 'ACTIVE' } },
+    };
   }
 
   if (search) {
@@ -75,17 +119,17 @@ const buildWhere = ({ search, status }) => {
  * with `id` as a tiebreaker, because two customers can register in the same
  * millisecond and an unstable sort makes the cursor meaningless.
  */
-export const listCustomers = async ({ limit, cursor, search, status }) =>
+export const listCustomers = async ({ limit, cursor, search, status, accountType }) =>
   prisma.customerProfile.findMany({
-    where: buildWhere({ search, status }),
+    where: buildWhere({ search, status, accountType }),
     select: LIST_FIELDS,
     orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     take: limit,
     ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
   });
 
-export const countCustomers = async ({ search, status } = {}) =>
-  prisma.customerProfile.count({ where: buildWhere({ search, status }) });
+export const countCustomers = async ({ search, status, accountType } = {}) =>
+  prisma.customerProfile.count({ where: buildWhere({ search, status, accountType }) });
 
 export const findCustomerById = async (id) =>
   prisma.customerProfile.findUnique({ where: { id }, select: DETAIL_FIELDS });

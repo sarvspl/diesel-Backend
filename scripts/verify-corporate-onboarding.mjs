@@ -353,6 +353,70 @@ async function main() {
   equal('contactEmail survives', row?.contactEmail, FULL.contactEmail);
   equal('contactPhone survives', row?.contactPhone, FULL.contactPhone);
 
+  // ==========================================================================
+  // G — a corporate customer is VISIBLE as one.
+  //
+  // A company member is not a separate record: it is the same row in
+  // `customer_profiles` with an ACTIVE membership. So an operator on the
+  // Customers screen saw a pending corporate applicant and a retail buyer
+  // rendered identically, with nothing to tell them apart — the membership was
+  // never joined into the admin projection at all.
+  // ==========================================================================
+  section('G. A CORPORATE CUSTOMER IS VISIBLE AS ONE');
+
+  const customers = await call('GET', '/admin/customers?limit=100', { token: adminToken });
+  equal('GET /admin/customers returns 200', customers.status, 200);
+
+  const rows = customers.data?.customers ?? [];
+  const memberRow = rows.find((c) => c.phone === phoneA);
+  const individualRow = rows.find((c) => c.phone === phoneB);
+
+  check('the corporate applicant is listed', Boolean(memberRow), 'not found');
+  equal('  labelled CORPORATE', memberRow?.accountType, 'CORPORATE');
+  equal('  carrying their company', memberRow?.corporate?.legalName, 'Sarvottam Logistics Pvt Ltd');
+  equal('  and its verification status', memberRow?.corporate?.verificationStatus, 'APPROVED');
+  equal('  and their role in it', memberRow?.corporate?.role, 'CORPORATE_OWNER');
+
+  check('the individual is listed', Boolean(individualRow), 'not found');
+  equal('  labelled INDIVIDUAL', individualRow?.accountType, 'INDIVIDUAL');
+  equal('  with no company', individualRow?.corporate, null);
+
+  const corporateOnly = await call('GET', '/admin/customers?limit=100&accountType=CORPORATE', {
+    token: adminToken,
+  });
+  const individualOnly = await call('GET', '/admin/customers?limit=100&accountType=INDIVIDUAL', {
+    token: adminToken,
+  });
+
+  check(
+    'accountType=CORPORATE returns only company members',
+    (corporateOnly.data?.customers ?? []).length > 0 &&
+      (corporateOnly.data?.customers ?? []).every((c) => c.accountType === 'CORPORATE'),
+    `got ${(corporateOnly.data?.customers ?? []).length} rows`
+  );
+  check(
+    'accountType=INDIVIDUAL returns only retail buyers',
+    (individualOnly.data?.customers ?? []).length > 0 &&
+      (individualOnly.data?.customers ?? []).every((c) => c.accountType === 'INDIVIDUAL'),
+    `got ${(individualOnly.data?.customers ?? []).length} rows`
+  );
+
+  // The two filters must PARTITION the directory — no row in both, none missed.
+  const unfiltered = rows.length;
+  const split =
+    (corporateOnly.data?.customers ?? []).length + (individualOnly.data?.customers ?? []).length;
+  equal('the two filters partition the directory', split, unfiltered);
+
+  const memberDetail = await call('GET', `/admin/customers/${memberRow?.id}`, {
+    token: adminToken,
+  });
+  equal('the detail endpoint carries it too', memberDetail.data?.customer?.accountType, 'CORPORATE');
+  equal(
+    '  including the company id the reviewer checked',
+    memberDetail.data?.customer?.corporate?.registration?.number,
+    accountA?.registration?.number
+  );
+
   console.log(`\n${'-'.repeat(64)}`);
   console.log(`${passed} passed, ${failed} failed`);
 
