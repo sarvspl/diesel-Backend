@@ -164,6 +164,26 @@ export const listAddressesForUser = async (userId) =>
     orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
   });
 
+/**
+ * The distinct places customers actually have addresses in.
+ *
+ * Feeds the pricing coverage check. "Is anything configured?" is the wrong
+ * question — a deployment can hold prices for Kolkata and Pune and still refuse
+ * every real order, because the addresses customers saved say Chakpachuria. The
+ * only useful question is whether the places customers ARE can be priced.
+ */
+export const listServiceAreas = async () => {
+  const rows = await prisma.address.groupBy({
+    by: ['city', 'pincode'],
+    where: { archivedAt: null },
+    _count: { _all: true },
+  });
+
+  return rows
+    .map((row) => ({ city: row.city, pincode: row.pincode, addressCount: row._count._all }))
+    .sort((a, b) => b.addressCount - a.addressCount);
+};
+
 /** Registered since a moment - used by the dashboard's new-customer tile. */
 export const countCustomersSince = async (since) =>
   prisma.customerProfile.count({ where: { createdAt: { gte: since } } });

@@ -4,8 +4,10 @@ import { PERMISSIONS, PRINCIPALS } from '../../shared/constants/rbac.js';
 import { authenticate } from '../../shared/middleware/authenticate.js';
 import { requirePermission, requirePrincipal } from '../../shared/middleware/authorize.js';
 import { validate } from '../../shared/middleware/validate.js';
+import { sendSuccess } from '../../shared/utils/api-response.js';
 
 import * as controller from './pricing.controller.js';
+import * as coverageService from './services/coverage.service.js';
 import {
   createDeliveryChargeSchema,
   createPriceSchema,
@@ -59,6 +61,17 @@ router.patch(
 );
 
 // --- Prices ----------------------------------------------------------------
+
+/**
+ * GET /api/v1/admin/coverage
+ *
+ * Whether the places customers actually have addresses in can be priced. Read
+ * with `price.read` because that is the configuration it reports on.
+ */
+router.get('/coverage', requirePermission(PERMISSIONS.PRICE_READ), async (_req, res) => {
+  const result = await coverageService.getCoverage();
+  return sendSuccess(res, { message: 'Pricing coverage retrieved', data: result });
+});
 
 router.get(
   '/prices',

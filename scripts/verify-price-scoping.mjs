@@ -188,6 +188,66 @@ async function main() {
   const cityUntouched = await quoteFor(OTHER_PIN);
   equal('the city rate is UNTOUCHED', cityUntouched.fuel, '90000.00');
 
+  // ==========================================================================
+  // 5 — COVERAGE: does the panel know when real addresses cannot be priced?
+  //
+  // Counting configured rows is not the same question. A deployment can hold an
+  // active price, an active delivery rule and a green Pricing screen while
+  // refusing every order, because the price says "Kolkata" and the addresses
+  // say "Chakpachuria". This reports the places customers ARE.
+  // ==========================================================================
+  section('5. COVERAGE REPORTS PLACES CUSTOMERS CANNOT BUY');
+
+  const ORPHAN_CITY = `Orphan${stamp}`;
+  const ORPHAN_PIN = `8${stamp}`;
+
+  await call('POST', '/customers/addresses', {
+    token,
+    body: {
+      line1: 'Unpriced site',
+      city: ORPHAN_CITY,
+      state: 'West Bengal',
+      pincode: ORPHAN_PIN,
+      latitude: '22.581028',
+      longitude: '88.480272',
+    },
+  });
+
+  const before = await call('GET', '/admin/coverage', { token: adminToken });
+  equal('GET /admin/coverage returns 200', before.status, 200);
+
+  const orphan = (before.data?.areas ?? []).find((area) => area.pincode === ORPHAN_PIN);
+  check('the new area is listed', Boolean(orphan), 'not found in coverage');
+  equal('  and reported as UNPRICED', orphan?.hasPrice, false);
+  check(
+    '  naming which product is unpriced',
+    (orphan?.unpricedProducts ?? []).includes('HSD'),
+    JSON.stringify(orphan?.unpricedProducts)
+  );
+  check(
+    'the summary counts it as uncovered',
+    (before.data?.summary?.uncovered ?? 0) >= 1,
+    JSON.stringify(before.data?.summary)
+  );
+
+  check(
+    'uncovered areas are listed FIRST, where they will be seen',
+    (before.data?.areas ?? [])[0]?.hasPrice === false ||
+      (before.data?.areas ?? [])[0]?.hasDeliveryRule === false,
+    JSON.stringify((before.data?.areas ?? [])[0])
+  );
+
+  // Publishing for it closes the gap.
+  equal(
+    'publishing a rate for that PIN code',
+    (await publish({ pincode: ORPHAN_PIN, pricePerUnit: '91.00' })).status,
+    201
+  );
+
+  const after = await call('GET', '/admin/coverage', { token: adminToken });
+  const fixed = (after.data?.areas ?? []).find((area) => area.pincode === ORPHAN_PIN);
+  equal('the area is now covered', fixed?.hasPrice, true);
+
   console.log(`\n${'-'.repeat(64)}`);
   console.log(`${passed} passed, ${failed} failed`);
   if (failed > 0) {
