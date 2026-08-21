@@ -9,6 +9,7 @@ const VEHICLE_FIELDS = {
   makeModel: true,
   tankCapacity: true,
   compartmentCount: true,
+  flowMeterEnabled: true,
   pesoLicenseNumber: true,
   pesoLicenseExpiry: true,
   calibrationCertNumber: true,

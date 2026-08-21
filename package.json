@@ -39,7 +39,10 @@
     "verify:onboarding": "node scripts/verify-driver-onboarding.mjs",
     "verify:fleet": "node scripts/verify-fleet-admin.mjs",
     "verify:corporate": "node scripts/verify-corporate-onboarding.mjs",
-    "verify:pricing": "node scripts/verify-price-scoping.mjs"
+    "verify:pricing": "node scripts/verify-price-scoping.mjs",
+    "verify:flowmeter": "node scripts/verify-flow-meter.mjs",
+    "verify:delivery-device": "node scripts/verify-delivery-device.mjs",
+    "check:fyft": "node scripts/check-fyft.mjs"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",

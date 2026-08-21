@@ -180,6 +180,8 @@ export const createVehicleSchema = {
     compartmentCount: z.coerce.number().int().min(1).max(20).default(1),
     /** Recorded as an OPENING_BALANCE adjustment, never written directly. */
     openingFuelQuantity: litres().default('0'),
+    /** This tanker is fitted with a dezel4u/FYFT bowser monitor. */
+    flowMeterEnabled: z.coerce.boolean().default(false),
     ...complianceFields,
     notes: z.string().trim().max(2000).optional(),
   }),
@@ -203,6 +205,7 @@ export const updateVehicleSchema = {
       insuranceExpiry: isoDate.nullable().optional(),
       pucExpiry: isoDate.nullable().optional(),
       fitnessExpiry: isoDate.nullable().optional(),
+      flowMeterEnabled: z.coerce.boolean().optional(),
       notes: z.string().trim().max(2000).nullable().optional(),
     })
     .refine((body) => Object.keys(body).length > 0, 'Provide at least one field to update')

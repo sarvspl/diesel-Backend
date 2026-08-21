@@ -107,6 +107,13 @@ export const ERROR_CODES = Object.freeze({
   EXCEEDS_CAPACITY: 'EXCEEDS_CAPACITY',
   METER_READING_REGRESSION: 'METER_READING_REGRESSION',
   METER_PHOTO_REQUIRED: 'METER_PHOTO_REQUIRED',
+  // The tanker has an IoT monitor but it could not be reached; the app should
+  // prompt the driver to enter the reading manually and resubmit.
+  METER_DEVICE_UNAVAILABLE: 'METER_DEVICE_UNAVAILABLE',
+  METER_READING_REQUIRED: 'METER_READING_REQUIRED',
+  // A stock-model closing reading was HIGHER than the opening — a refill or a
+  // sensor glitch, never a delivery.
+  METER_STOCK_INCREASED: 'METER_STOCK_INCREASED',
 
   // --- Pricing & catalog ---------------------------------------------------
   PRODUCT_NOT_FOUND: 'PRODUCT_NOT_FOUND',

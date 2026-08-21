@@ -993,6 +993,13 @@ model Vehicle {
   tankCapacity     Decimal @map("tank_capacity") @db.Decimal(12, 3)
   compartmentCount Int     @default(1) @map("compartment_count")
 
+  /// This tanker is fitted with an IoT bowser monitor (dezel4u/FYFT), so its
+  /// delivery readings are fetched from the device instead of typed. Keyed by
+  /// `registrationNumber` on the vendor side. False = driver enters readings
+  /// manually as before. The device is a convenience, never a hard dependency:
+  /// if it cannot be reached at delivery time, the driver falls back to manual.
+  flowMeterEnabled Boolean @default(false) @map("flow_meter_enabled")
+
   /// Compliance. BR-402: an expired calibration certificate or PESO licence
   /// EXCLUDES the vehicle from dispatch - dispensing on an uncalibrated meter
   /// is a Legal Metrology offence, not a policy preference.
@@ -1223,7 +1230,17 @@ model MeterReading {
 
   /// Lifetime, monotonically increasing counter. Wider than a tank quantity
   /// because it accumulates for the life of the meter.
-  totalizer Decimal @db.Decimal(14, 3)
+  ///
+  /// NULLABLE since bowser-monitor (dezel4u/FYFT) support: those devices report
+  /// current tank STOCK, not a meter totaliser, and a reading carries exactly
+  /// one of the two (enforced by a CHECK). For a meter reading this is set and
+  /// `stockLitres` is null; for a stock reading it is the reverse.
+  totalizer Decimal? @db.Decimal(14, 3)
+
+  /// Current tank stock in litres, for STOCK-model devices. Delivered quantity
+  /// is then `opening − closing` (the tank falls), computed in
+  /// `deliveredFromStock`. Null for meter readings.
+  stockLitres Decimal? @map("stock_litres") @db.Decimal(12, 3)
 
   /// BR-905: both recorded, billing on NET. Diesel at 40 °C occupies ~1.5%
   /// more volume than at 15 °C - real money on a large order.

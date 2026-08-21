@@ -1,8 +1,19 @@
 import { prisma } from '../../../infrastructure/database/prisma.js';
+import {
+  deliveredFromStock,
+  FlowMeterError,
+  getFlowMeterProvider,
+  MEASUREMENT_MODEL,
+} from '../../../infrastructure/providers/flow-meter/index.js';
 import { ERROR_CODES } from '../../../shared/constants/error-codes.js';
 import { METER_READING_SOURCE, METER_READING_TYPE } from '../../../shared/constants/fleet.js';
 import { ACTOR_KIND, ORDER_STATUS } from '../../../shared/constants/order.js';
-import { BadRequestError, ConflictError, NotFoundError } from '../../../shared/errors/index.js';
+import {
+  BadRequestError,
+  ConflictError,
+  NotFoundError,
+  ServiceUnavailableError,
+} from '../../../shared/errors/index.js';
 import { createLogger } from '../../../shared/logger/index.js';
 import { transitionOrder } from '../../order/services/transition-order.service.js';
 import * as driverOrderRepository from '../repositories/driver-order.repository.js';
@@ -133,6 +144,81 @@ const computeDeviation = (addressSnapshot, latitude, longitude) => {
 };
 
 /* -------------------------------------------------------------------------- */
+/** The tanker's identity and whether it carries an IoT bowser monitor. */
+const loadVehicle = (vehicleId) =>
+  prisma.vehicle.findUnique({
+    where: { id: vehicleId },
+    select: { registrationNumber: true, vehicleNumber: true, flowMeterEnabled: true },
+  });
+
+/**
+ * Capture ONE delivery reading — from the IoT device where the tanker has one,
+ * otherwise from what the driver typed. Returns the fields to persist on a
+ * MeterReading (never both totaliser and stock), or throws.
+ *
+ * The manual branch is BOTH the normal path for a tanker with no monitor AND
+ * the fallback when a monitored tanker's device is unreachable — a delivery is
+ * never held hostage to an external API (rule 3 above, extended to the device).
+ */
+export const captureReading = async ({ vehicle, which, manualTotalizer, manualStock, photoKey }) => {
+  const provider = getFlowMeterProvider();
+  const deviceMode = Boolean(provider && vehicle?.flowMeterEnabled);
+
+  if (deviceMode) {
+    try {
+      const r = await provider.read({
+        registration: vehicle.registrationNumber,
+        fleetNumber: vehicle.vehicleNumber,
+      });
+      const isStock = r.measurement === MEASUREMENT_MODEL.STOCK;
+      return {
+        totalizer: isStock ? null : r.totalizerGross,
+        stockLitres: isStock ? r.stockLitres : null,
+        source: METER_READING_SOURCE.FLOW_METER_API,
+        photoKey: null,
+        note: `${provider.name}:${isStock ? `stock ${r.stockLitres}L` : `meter ${r.totalizerGross}`}`,
+      };
+    } catch (err) {
+      // Non-recoverable (bad config, unknown vehicle) is a real error; a
+      // recoverable one (offline/fault) drops through to the manual fallback.
+      if (!(err instanceof FlowMeterError) || !err.isRecoverable) throw err;
+      log.warn({ code: err.code, which }, 'flow-meter unavailable — trying manual fallback');
+    }
+  }
+
+  const manual =
+    manualStock != null
+      ? { totalizer: null, stockLitres: String(manualStock) }
+      : manualTotalizer != null
+        ? { totalizer: String(manualTotalizer), stockLitres: null }
+        : null;
+
+  if (manual) {
+    if (!photoKey) {
+      throw new BadRequestError('A photograph of the meter is required', {
+        code: ERROR_CODES.METER_PHOTO_REQUIRED,
+      });
+    }
+    return { ...manual, source: METER_READING_SOURCE.MANUAL_ENTRY, photoKey, note: null };
+  }
+
+  if (deviceMode) {
+    throw new ServiceUnavailableError('The meter is not responding — enter the reading manually', {
+      code: ERROR_CODES.METER_DEVICE_UNAVAILABLE,
+    });
+  }
+  throw new BadRequestError(`A ${which} reading is required`, {
+    code: ERROR_CODES.METER_READING_REQUIRED,
+  });
+};
+
+/** The reading's value for logs/metadata, whichever model it is (as a string). */
+const readingValue = (r) => {
+  const v = r?.totalizer ?? r?.stockLitres;
+  return v == null ? null : String(v);
+};
+
+/* -------------------------------------------------------------------------- */
 /* Opening reading                                                            */
 /* -------------------------------------------------------------------------- */
 
@@ -147,6 +233,7 @@ export const startDispensing = async ({
   userId,
   orderId,
   openingTotalizer,
+  openingStock,
   photoKey,
   receiverVerification,
   requestId,
@@ -170,28 +257,34 @@ export const startDispensing = async ({
     });
   }
 
-  /**
-   * BR-906: a manually entered reading requires a photograph of the meter.
-   * Phase 1 is manual-only, so this is effectively mandatory on every delivery.
-   */
-  if (!photoKey) {
-    throw new BadRequestError('A photograph of the meter is required', {
-      code: ERROR_CODES.METER_PHOTO_REQUIRED,
-    });
-  }
+  // Reading from the device where the tanker has a monitor, else from the
+  // driver (typed value + photo, BR-906). One or the other, never both.
+  const vehicle = await loadVehicle(vehicleId);
+  const opening = await captureReading({
+    vehicle,
+    which: 'opening',
+    manualTotalizer: openingTotalizer,
+    manualStock: openingStock,
+    photoKey,
+  });
 
   await prisma.meterReading.create({
     data: {
       vehicleId,
       orderId,
       readingType: METER_READING_TYPE.DELIVERY_START,
-      totalizer: String(openingTotalizer),
-      source: METER_READING_SOURCE.MANUAL_ENTRY,
-      photoKey,
+      totalizer: opening.totalizer,
+      stockLitres: opening.stockLitres,
+      source: opening.source,
+      photoKey: opening.photoKey,
       recordedByUserId: userId,
-      notes: receiverVerification?.method
-        ? `Receiver verified by ${receiverVerification.method}`
-        : null,
+      notes:
+        [
+          receiverVerification?.method ? `Receiver verified by ${receiverVerification.method}` : null,
+          opening.note,
+        ]
+          .filter(Boolean)
+          .join(' · ') || null,
     },
   });
 
@@ -203,13 +296,17 @@ export const startDispensing = async ({
     reason: 'Receiver verified, opening reading captured',
     expectedStatus: ORDER_STATUS.ARRIVED,
     metadata: {
-      openingTotalizer: String(openingTotalizer),
+      openingReading: readingValue(opening),
+      readingSource: opening.source,
       receiverVerification: receiverVerification ?? null,
     },
     requestId,
   });
 
-  log.info({ orderId, vehicleId, openingTotalizer }, 'dispensing started');
+  log.info(
+    { orderId, vehicleId, opening: readingValue(opening), source: opening.source },
+    'dispensing started'
+  );
 
   return transitioned;
 };
@@ -272,6 +369,7 @@ export const completeDelivery = async ({
   orderId,
   clientDeliveryId,
   closingTotalizer,
+  closingStock,
   photoKey,
   outcome,
   reasonCode,
@@ -309,38 +407,73 @@ export const completeDelivery = async ({
     });
   }
 
-  if (!photoKey) {
-    throw new BadRequestError('A photograph of the closing meter is required', {
-      code: ERROR_CODES.METER_PHOTO_REQUIRED,
-    });
-  }
-
   const vehicleId = order.reservations?.[0]?.vehicleId;
 
-  // FAILED bills nothing (BR-921), so no quantity is computed for it.
+  // FAILED bills nothing (BR-921), so no reading is captured for it — but a
+  // photo still documents WHY it failed, as before.
   let deliveredQuantity = 0;
   let rollover = false;
+  let closing = null;
 
-  if (outcome !== 'FAILED') {
-    const result = computeDeliveredQuantity({
-      opening: opening.totalizer,
-      closing: closingTotalizer,
-      meterMaximum: null,
+  if (outcome === 'FAILED') {
+    if (!photoKey) {
+      throw new BadRequestError('A photograph of the closing meter is required', {
+        code: ERROR_CODES.METER_PHOTO_REQUIRED,
+      });
+    }
+  } else {
+    // The delivery is STOCK-based or METER-based according to the OPENING
+    // reading — a tanker does not change model mid-delivery.
+    const vehicle = await loadVehicle(vehicleId);
+    closing = await captureReading({
+      vehicle,
+      which: 'closing',
+      manualTotalizer: closingTotalizer,
+      manualStock: closingStock,
+      photoKey,
     });
 
-    if (!result.ok) {
-      throw new BadRequestError(
-        `Closing reading ${closingTotalizer} is below the opening reading ${opening.totalizer}. ` +
-          'Check for a meter reset or a transposed digit.',
-        {
+    if (opening.stockLitres != null) {
+      // STOCK: the tank falls as fuel leaves — delivered = opening − closing.
+      const stock = deliveredFromStock(opening.stockLitres, closing.stockLitres);
+      if (!stock.ok) {
+        if (stock.code === 'STOCK_INCREASED') {
+          throw new ConflictError(
+            `Closing stock ${closing.stockLitres} is above the opening ${opening.stockLitres} — ` +
+              'a refill or a sensor fault, not a delivery.',
+            {
+              code: ERROR_CODES.METER_STOCK_INCREASED,
+              details: { opening: String(opening.stockLitres), closing: closing.stockLitres },
+            }
+          );
+        }
+        throw new BadRequestError('The stock reading is not a number', {
           code: ERROR_CODES.METER_READING_REGRESSION,
-          details: { opening: String(opening.totalizer), closing: String(closingTotalizer) },
+        });
+      }
+      deliveredQuantity = Number(stock.litres);
+    } else {
+      // METER: delivered = closing − opening, with rollover (unchanged).
+      const result = computeDeliveredQuantity({
+        opening: opening.totalizer,
+        closing: closing.totalizer,
+        meterMaximum: null,
+      });
+
+      if (!result.ok) {
+        throw new BadRequestError(
+          `Closing reading ${closing.totalizer} is below the opening reading ${opening.totalizer}. ` +
+            'Check for a meter reset or a transposed digit.',
+          {
+            code: ERROR_CODES.METER_READING_REGRESSION,
+            details: { opening: String(opening.totalizer), closing: String(closing.totalizer) },
         }
       );
     }
 
-    deliveredQuantity = result.quantity;
-    rollover = result.rollover;
+      deliveredQuantity = result.quantity;
+      rollover = result.rollover;
+    }
   }
 
   const ordered = Number(order.quantity);
@@ -365,18 +498,20 @@ export const completeDelivery = async ({
         vehicleId,
         orderId,
         readingType: METER_READING_TYPE.DELIVERY_END,
-        totalizer: String(closingTotalizer),
+        // Whichever model the delivery used — one is set, the other null.
+        totalizer: closing.totalizer,
+        stockLitres: closing.stockLitres,
         grossQuantity: String(deliveredQuantity),
-        // Net is what is billed (BR-905). With no temperature probe in Phase 1
-        // it equals gross; the column exists so compensation can arrive later
+        // Net is what is billed (BR-905). With no temperature figure yet it
+        // equals gross; the column exists so compensation can arrive later
         // without a migration.
         netQuantity: String(deliveredQuantity),
         temperatureC: temperatureC === undefined ? null : String(temperatureC),
-        source: METER_READING_SOURCE.MANUAL_ENTRY,
-        photoKey,
+        source: closing.source,
+        photoKey: closing.photoKey,
         recordedByUserId: userId,
         // The client id lives here so a replay is detectable without a new table.
-        notes: `delivery:${clientDeliveryId}${notes ? ` · ${notes}` : ''}`,
+        notes: `delivery:${clientDeliveryId}${closing.note ? ` · ${closing.note}` : ''}${notes ? ` · ${notes}` : ''}`,
       },
     });
   }
@@ -395,8 +530,9 @@ export const completeDelivery = async ({
     expectedStatus: ORDER_STATUS.DISPENSING,
     metadata: {
       clientDeliveryId,
-      openingTotalizer: String(opening.totalizer),
-      closingTotalizer: String(closingTotalizer),
+      openingReading: readingValue(opening),
+      closingReading: readingValue(closing),
+      readingSource: closing?.source ?? null,
       deliveredQuantity: String(deliveredQuantity),
       orderedQuantity: String(ordered),
       outcome,

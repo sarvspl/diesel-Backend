@@ -162,6 +162,8 @@ export const listDeliveryReadings = async (orderId) =>
       id: true,
       readingType: true,
       totalizer: true,
+      stockLitres: true,
+      source: true,
       grossQuantity: true,
       netQuantity: true,
       photoKey: true,

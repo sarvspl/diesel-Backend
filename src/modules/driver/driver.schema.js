@@ -132,13 +132,19 @@ const receiverVerification = z.discriminatedUnion('method', [
 export const startDispensingSchema = {
   params: orderIdSchema.params,
   body: z.object({
-    openingTotalizer: totalizer,
     /**
-     * BR-906 requires a photograph of every manually entered reading, but the
-     * rule is enforced in the SERVICE rather than here, so the response
-     * carries `METER_PHOTO_REQUIRED` instead of a generic validation failure.
-     * The driver app branches on that code to reopen the camera; it cannot do
-     * anything useful with "validation failed".
+     * OPTIONAL now. On a tanker with an IoT bowser monitor the backend fetches
+     * the reading from the device, so the app sends nothing. On a manual tanker
+     * — or as a fallback when the device is unreachable — the driver types it,
+     * and the service enforces its presence + a photo (BR-906).
+     */
+    openingTotalizer: totalizer.optional(),
+    /** Manual fallback for a STOCK-model (bowser-monitor) tanker: litres in tank. */
+    openingStock: totalizer.optional(),
+    /**
+     * BR-906 requires a photograph of every manually entered reading, enforced
+     * in the SERVICE so the response carries `METER_PHOTO_REQUIRED` and the app
+     * can reopen the camera rather than show "validation failed".
      */
     photoKey: photoKey.optional(),
     receiverVerification,
@@ -154,7 +160,10 @@ export const completeDeliverySchema = {
      * the duplicate this mechanism exists to prevent.
      */
     clientDeliveryId: uuid('Client delivery id'),
-    closingTotalizer: totalizer,
+    /** Optional for the same reason as the opening reading — the device supplies it. */
+    closingTotalizer: totalizer.optional(),
+    /** Manual fallback for a STOCK-model tanker: litres remaining in tank. */
+    closingStock: totalizer.optional(),
     /** Enforced in the service, for the same reason as the opening reading. */
     photoKey: photoKey.optional(),
     outcome: z.enum(['FULL', 'PARTIAL', 'FAILED']),

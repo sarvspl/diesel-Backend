@@ -35,6 +35,7 @@ const toPublicVehicle = (vehicle) => {
     // in them (docs/10 §5.3).
     tankCapacity: String(vehicle.tankCapacity),
     compartmentCount: vehicle.compartmentCount,
+    flowMeterEnabled: vehicle.flowMeterEnabled ?? false,
     status: vehicle.status,
     compliance: {
       pesoLicenseNumber: vehicle.pesoLicenseNumber,

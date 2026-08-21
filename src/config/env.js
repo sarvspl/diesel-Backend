@@ -186,6 +186,21 @@ const envSchema = z
     OTP_MAX_SENDS_PER_IP_PER_HOUR: z.coerce.number().int().min(1).default(20),
     OTP_MAX_VERIFY_ATTEMPTS: z.coerce.number().int().min(3).max(10).default(5),
 
+    // --- Flow meter / bowser (IoT) -----------------------------------------
+    // `manual` (default) = no device; drivers type the reading as today.
+    // `mock` = synthetic stock for local dev. `dezel4u` = the FYFT
+    // bowser-monitoring platform (current tank stock). See
+    // src/infrastructure/providers/flow-meter/ and docs/16.
+    FLOW_METER_PROVIDER: z.enum(['manual', 'mock', 'dezel4u']).default('manual'),
+    // The driver is standing at the tanker; a slow API must fail over to manual
+    // rather than hang the delivery.
+    FLOW_METER_TIMEOUT_MS: z.coerce.number().int().min(500).max(30_000).default(4000),
+
+    // dezel4u / FYFT. The source code is a secret, bound to this server's IP by
+    // the vendor. Required only when FLOW_METER_PROVIDER=dezel4u.
+    FYFT_SOURCE_CODE: z.string().optional(),
+    FYFT_BASE_URL: z.string().url().default('https://www.dezel4u.com/go_fyft'),
+
     // --- Observability ---------------------------------------------------
     LOG_LEVEL: z
       .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
