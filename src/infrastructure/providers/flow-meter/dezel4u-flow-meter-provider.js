@@ -94,12 +94,24 @@ export const createDezel4uProvider = ({
     return Number.isFinite(n) ? n.toFixed(3) : null;
   };
 
+  /** "29.0 °C" | "29" → "29.0", or null. Keeps a leading minus for sub-zero. */
+  const parseTemp = (value) => {
+    const cleaned = String(value ?? '').replace(/[^\d.-]/g, '');
+    // Number('') is 0, not NaN — an absent temp must read as null, not 0 °C.
+    if (cleaned === '' || cleaned === '-') return null;
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n.toFixed(1) : null;
+  };
+
+  /** FYFT success shapes vary across endpoints: `true`, `"1"`, or `1`. */
+  const isOk = (b) => b?.result === true || b?.result === '1' || b?.result === 1;
+
   const toReading = (body, registration) => ({
     measurement: MEASUREMENT_MODEL.STOCK,
     stockLitres: parseStock(body.stock),
     totalizerGross: null,
     totalizerNet: null,
-    temperatureC: null,
+    temperatureC: parseTemp(body.temp),
     registerMax: null,
     // The vendor exposes no dispensing state; movement is separate telematics.
     status: FLOW_METER_STATUS.IDLE,
@@ -164,6 +176,58 @@ export const createDezel4uProvider = ({
       }
 
       return toReading(body, registration);
+    },
+
+    /**
+     * Push OUR current fuel rate INTO FYFT (`latest_rate.php`). One-way, us →
+     * them: the vendor shows this figure on their side. It does NOT affect our
+     * pricing — customer prices come from our own engine. Same auth as `read`
+     * (source code + JWT), with the one-retry token refresh.
+     *
+     * Note: the vendor's PHP sample wrongly puts the form body in the
+     * `Authentication` header; the correct value there is the source code, as
+     * every working endpoint uses.
+     */
+    async pushRate({ rate, fuelType = 'HSD', skuId = 2 }) {
+      if (rate == null || !Number.isFinite(Number(rate)) || Number(rate) <= 0) {
+        throw new FlowMeterError(FLOW_METER_ERROR.PROVIDER_ERROR, 'A positive numeric rate is required');
+      }
+
+      const send = async (token) => {
+        const res = await http(`${baseUrl}/latest_rate.php`, {
+          method: 'POST',
+          headers: {
+            'Content-type': 'application/x-www-form-urlencoded',
+            Authentication: sourceCode,
+            'X-Verify': token,
+          },
+          body: form({ fueltype: fuelType, sku_id: skuId, rate: String(rate) }),
+        });
+
+        if (!res?.ok) {
+          throw new FlowMeterError(FLOW_METER_ERROR.DEVICE_OFFLINE, `FYFT HTTP ${res?.status}`, {
+            status: res?.status,
+          });
+        }
+
+        return res.json();
+      };
+
+      let body = await send(await getToken());
+
+      if (!isOk(body) && /auth/i.test(body?.msg ?? '')) {
+        cached = null;
+        body = await send(await getToken());
+      }
+
+      if (!isOk(body)) {
+        const code = /not\s*match|auth/i.test(body?.msg ?? '')
+          ? FLOW_METER_ERROR.AUTH_FAILED
+          : FLOW_METER_ERROR.PROVIDER_ERROR;
+        throw new FlowMeterError(code, body?.msg ?? 'FYFT rate update failed', { raw: body });
+      }
+
+      return { ok: true, raw: body };
     },
   };
 };

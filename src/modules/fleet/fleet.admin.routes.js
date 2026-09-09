@@ -129,6 +129,18 @@ router.get(
   controller.getVehicle
 );
 
+/**
+ * Live IoT telemetry for the vehicle. A read-only bridge to the device
+ * platform — the app and admin get the tanker's current stock/location from
+ * US, never from the vendor (the FYFT credentials + IP whitelist are here).
+ */
+router.get(
+  '/vehicles/:id/telemetry',
+  requirePermission(PERMISSIONS.VEHICLE_READ),
+  validate(vehicleIdSchema),
+  controller.getVehicleTelemetry
+);
+
 router.patch(
   '/vehicles/:id',
   requirePermission(PERMISSIONS.VEHICLE_MANAGE),

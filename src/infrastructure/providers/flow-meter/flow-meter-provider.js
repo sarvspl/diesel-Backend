@@ -81,6 +81,10 @@ export class FlowMeterError extends Error {
  * @property {'STOCK'|'TOTALIZER'} measurement The model every reading uses.
  * @property {(ref: { fleetNumber?: string, registration: string }) => Promise<FlowMeterReading>} read
  *   Resolves with the current reading, or throws a {@link FlowMeterError}.
+ * @property {(input: { rate: string|number, fuelType?: string, skuId?: number }) => Promise<{ ok: true, raw: object }>} [pushRate]
+ *   Optional. Pushes OUR fuel rate to the vendor (one-way, display-only on their
+ *   side). Throws a {@link FlowMeterError} on failure. Absent when the provider
+ *   has no such capability.
  */
 
 /**

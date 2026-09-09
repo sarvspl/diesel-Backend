@@ -17,6 +17,7 @@ import {
   listPricesSchema,
   listProductsSchema,
   listTaxesSchema,
+  pushFyftRateSchema,
   updatePriceStatusSchema,
   updateProductSchema,
   updateTaxSchema,
@@ -139,6 +140,20 @@ router.post(
   requirePermission(PERMISSIONS.DELIVERY_CHARGE_MANAGE),
   validate(createDeliveryChargeSchema),
   controller.createDeliveryRule
+);
+
+// --- FYFT device rate ------------------------------------------------------
+
+/**
+ * Push our HSD rate to the FYFT device platform (display-only on their side).
+ * `price.manage` — it is a rate action, though it never touches customer
+ * pricing; a mis-configured server answers 503 rather than failing silently.
+ */
+router.post(
+  '/fyft-rate',
+  requirePermission(PERMISSIONS.PRICE_MANAGE),
+  validate(pushFyftRateSchema),
+  controller.pushFyftRate
 );
 
 export default router;

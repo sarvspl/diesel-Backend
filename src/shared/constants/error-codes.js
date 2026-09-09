@@ -114,6 +114,8 @@ export const ERROR_CODES = Object.freeze({
   // A stock-model closing reading was HIGHER than the opening — a refill or a
   // sensor glitch, never a delivery.
   METER_STOCK_INCREASED: 'METER_STOCK_INCREASED',
+  // Live telemetry was asked for a vehicle that has no IoT monitor fitted.
+  FLOW_METER_NOT_ENABLED: 'FLOW_METER_NOT_ENABLED',
 
   // --- Pricing & catalog ---------------------------------------------------
   PRODUCT_NOT_FOUND: 'PRODUCT_NOT_FOUND',

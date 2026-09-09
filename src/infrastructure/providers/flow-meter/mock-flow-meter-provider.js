@@ -57,4 +57,9 @@ export const mockFlowMeterProvider = {
       raw: { mock: true, key, stock: next },
     };
   },
+
+  async pushRate({ rate, fuelType = 'HSD', skuId = 2 }) {
+    log.debug({ rate, fuelType, skuId }, 'mock rate push');
+    return { ok: true, raw: { mock: true, fueltype: fuelType, sku_id: skuId, rate: String(rate) } };
+  },
 };

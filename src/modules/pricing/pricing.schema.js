@@ -305,3 +305,16 @@ export const createQuoteSchema = {
 export const quoteIdSchema = {
   params: z.object({ id: uuid('Quote id') }),
 };
+
+// --- FYFT device rate ------------------------------------------------------
+
+/**
+ * The single HSD rate pushed to the FYFT device platform. Standalone — NOT one
+ * of the per-location `fuel_prices`; the operator types the figure the vendor
+ * should display, and it never feeds a customer quote.
+ */
+export const pushFyftRateSchema = {
+  body: z.object({
+    rate: money('Rate', { max: 100_000 }),
+  }),
+};

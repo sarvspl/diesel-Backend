@@ -1,6 +1,16 @@
+import {
+  FLOW_METER_ERROR,
+  FlowMeterError,
+  getFlowMeterProvider,
+} from '../../../infrastructure/providers/flow-meter/index.js';
 import { ERROR_CODES } from '../../../shared/constants/error-codes.js';
 import { VEHICLE_STATUS } from '../../../shared/constants/fleet.js';
-import { BadRequestError, ConflictError, NotFoundError } from '../../../shared/errors/index.js';
+import {
+  BadRequestError,
+  ConflictError,
+  NotFoundError,
+  ServiceUnavailableError,
+} from '../../../shared/errors/index.js';
 import { createLogger } from '../../../shared/logger/index.js';
 import * as driverRepository from '../repositories/driver.repository.js';
 import * as vehicleRepository from '../repositories/vehicle.repository.js';
@@ -98,6 +108,81 @@ export const getVehicle = async (id) => {
   if (!vehicle) throw new NotFoundError('Vehicle not found');
 
   return toPublicVehicle(vehicle);
+};
+
+/**
+ * Live telemetry for an IoT-monitored tanker.
+ *
+ * The single bridge to the device platform: FYFT's source code and IP
+ * whitelist live only on this server, so the admin and the apps read a
+ * tanker's CURRENT state from HERE, never from the vendor directly. Each call
+ * is a live outbound read, so its failures are the device's, mapped to what
+ * the caller should do about them:
+ *   - no monitor fitted        → 409 (this vehicle simply has no live feed)
+ *   - provider not configured  → 503 (server is on `manual`)
+ *   - registration not mapped  → 404 (device unknown to the vendor)
+ *   - offline / faulty / auth  → 503 (retryable; the vendor side is down)
+ */
+export const getVehicleTelemetry = async (id) => {
+  const vehicle = await vehicleRepository.findById(id);
+
+  if (!vehicle) throw new NotFoundError('Vehicle not found');
+
+  if (!vehicle.flowMeterEnabled) {
+    throw new ConflictError('This vehicle has no IoT bowser monitor fitted', {
+      code: ERROR_CODES.FLOW_METER_NOT_ENABLED,
+    });
+  }
+
+  const provider = getFlowMeterProvider();
+
+  if (!provider) {
+    throw new ServiceUnavailableError('Device integration is not configured on the server', {
+      code: ERROR_CODES.METER_DEVICE_UNAVAILABLE,
+    });
+  }
+
+  let reading;
+  try {
+    reading = await provider.read({ registration: vehicle.registrationNumber });
+  } catch (error) {
+    if (error instanceof FlowMeterError) {
+      if (error.code === FLOW_METER_ERROR.VEHICLE_NOT_FOUND) {
+        throw new NotFoundError('No device is mapped to this vehicle registration', {
+          code: ERROR_CODES.METER_DEVICE_UNAVAILABLE,
+        });
+      }
+      throw new ServiceUnavailableError(`The device is unavailable right now (${error.code})`, {
+        code: ERROR_CODES.METER_DEVICE_UNAVAILABLE,
+      });
+    }
+    throw error;
+  }
+
+  const capacity = Number(vehicle.tankCapacity);
+  const stock = reading.stockLitres != null ? Number(reading.stockLitres) : null;
+
+  return {
+    vehicleId: vehicle.id,
+    vehicleNumber: vehicle.vehicleNumber,
+    registrationNumber: vehicle.registrationNumber,
+    measurement: reading.measurement,
+    // Litres as a string, same discipline as every other quantity.
+    stockLitres: reading.stockLitres,
+    tankCapacity: String(vehicle.tankCapacity),
+    // Convenience so the app need not know the capacity to draw a gauge.
+    fillPercent:
+      stock != null && Number.isFinite(capacity) && capacity > 0
+        ? Math.round((stock / capacity) * 1000) / 10
+        : null,
+    temperatureC: reading.temperatureC,
+    status: reading.status,
+    location: reading.location,
+    movementStatus: reading.movementStatus,
+    // OUR receipt time — the vendor sends none. Freshness is validated
+    // separately against a live dispense (docs/16).
+    capturedAt: reading.capturedAt,
+  };
 };
 
 export const createVehicle = async ({ actorUserId, openingFuelQuantity = '0', ...input }) => {

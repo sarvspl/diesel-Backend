@@ -1,6 +1,7 @@
 import { sendCreated, sendSuccess } from '../../shared/utils/api-response.js';
 
 import * as catalogService from './services/catalog.service.js';
+import * as fyftService from './services/fyft.service.js';
 import * as priceService from './services/price.service.js';
 import * as quoteService from './services/quote.service.js';
 
@@ -60,6 +61,13 @@ export const listPrices = async (req, res) => {
  * second administrator rather than rejected - and the `warning` in the body
  * tells the client it is not yet live (BR-607).
  */
+/** POST /api/v1/admin/fyft-rate — push our HSD rate to the FYFT device platform. */
+export const pushFyftRate = async (req, res) => {
+  const result = await fyftService.pushHsdRate({ rate: req.validated.body.rate });
+
+  return sendSuccess(res, { message: 'Rate sent to FYFT', data: result });
+};
+
 export const publishPrice = async (req, res) => {
   const result = await priceService.publishPrice({
     actorUserId: req.auth.userId,

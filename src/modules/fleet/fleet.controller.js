@@ -96,6 +96,13 @@ export const getVehicle = async (req, res) => {
   return sendSuccess(res, { message: 'Vehicle retrieved', data: { vehicle } });
 };
 
+/** GET /api/v1/admin/vehicles/:id/telemetry — live IoT device reading. */
+export const getVehicleTelemetry = async (req, res) => {
+  const telemetry = await vehicleService.getVehicleTelemetry(req.validated.params.id);
+
+  return sendSuccess(res, { message: 'Vehicle telemetry retrieved', data: { telemetry } });
+};
+
 // --- Assignment ------------------------------------------------------------
 
 /** POST /api/v1/admin/vehicles/:id/assign-driver */
