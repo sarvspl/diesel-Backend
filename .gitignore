@@ -46,3 +46,6 @@ desktop.ini
 *.pid.lock
 .tmp/
 tmp/
+
+# Claude Code project map (local only)
+CLAUDE.md
