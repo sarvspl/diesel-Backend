@@ -47,6 +47,16 @@ describe(
       return { status: response.status, body: await response.json() };
     };
 
+    /** A SIGNUP code for `number`, read from `devCode` (echoed outside production). */
+    const signupCode = async (number) => {
+      const { body } = await call('/auth/otp/request', {
+        method: 'POST',
+        body: { phone: number, principal: 'CUSTOMER', purpose: 'SIGNUP' },
+      });
+
+      return body.data.devCode;
+    };
+
     before(async () => {
       const { createApp } = await import('../../src/app.js');
       ({ prisma } = await import('../../src/infrastructure/database/prisma.js'));
@@ -59,7 +69,7 @@ describe(
     });
 
     after(async () => {
-      await prisma?.otpChallenge.deleteMany({ where: { identifier: otpPhone } });
+      await prisma?.otpChallenge.deleteMany({ where: { identifier: { in: [phone, otpPhone] } } });
       await prisma?.user.deleteMany({ where: { phone: { in: [phone, otpPhone] } } });
       await prisma?.$disconnect();
       server?.close();
@@ -71,7 +81,7 @@ describe(
     it('registers a new identity', async () => {
       const { status, body } = await call('/auth/register', {
         method: 'POST',
-        body: { phone, password, consentVersion: '2026-07-01' },
+        body: { phone, code: await signupCode(phone), password, consentVersion: '2026-07-01' },
       });
 
       assert.equal(status, 201);
@@ -96,7 +106,7 @@ describe(
     it('rejects a duplicate registration', async () => {
       const { status, body } = await call('/auth/register', {
         method: 'POST',
-        body: { phone, password },
+        body: { phone, code: await signupCode(phone), password },
       });
 
       assert.equal(status, 409);
@@ -292,7 +302,7 @@ describe(
       const other = `+9197${String(Date.now()).slice(-8)}`;
       const registered = await call('/auth/register', {
         method: 'POST',
-        body: { phone: other, password },
+        body: { phone: other, code: await signupCode(other), password },
       });
 
       const mine = await call('/auth/login', {
@@ -312,6 +322,7 @@ describe(
       // 404 not 403: a 403 would confirm the session id exists (docs/10 §6).
       assert.equal(attempt.status, 404);
 
+      await prisma.otpChallenge.deleteMany({ where: { identifier: other } });
       await prisma.user.deleteMany({ where: { phone: other } });
     });
 

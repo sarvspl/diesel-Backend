@@ -1,7 +1,12 @@
 import { ERROR_CODES } from '../../../shared/constants/error-codes.js';
 import { OTP_PURPOSE, SESSION_REVOCATION_REASON } from '../../../shared/constants/identity.js';
 import { DEFAULT_ROLE_BY_PRINCIPAL, PRINCIPALS } from '../../../shared/constants/rbac.js';
-import { ConflictError, NotFoundError, UnauthorizedError } from '../../../shared/errors/index.js';
+import {
+  BadRequestError,
+  ConflictError,
+  NotFoundError,
+  UnauthorizedError,
+} from '../../../shared/errors/index.js';
 import { createLogger } from '../../../shared/logger/index.js';
 import * as sessionRepository from '../repositories/session.repository.js';
 import * as userRepository from '../repositories/user.repository.js';
@@ -31,6 +36,12 @@ const toPublicUser = (user) => ({
   status: user.status,
   phoneVerified: Boolean(user.phoneVerifiedAt),
   emailVerified: Boolean(user.emailVerifiedAt),
+  /**
+   * Whether mobile/email + password sign-in is possible, so an app can offer
+   * "Set password" or "Change password". Derived from the hash, never the hash.
+   * Every caller passes a row selected WITH the hash for this to be accurate.
+   */
+  hasPassword: Boolean(user.passwordHash),
   createdAt: user.createdAt,
 });
 
@@ -89,36 +100,41 @@ const issueTokens = async ({ user, sessionId, refreshToken }) => {
 };
 
 /**
- * Register a new platform identity.
+ * Customer sign-up with a password (mobile verified by OTP in the same call).
  *
  * Deliberately restricted to CUSTOMER. Drivers are created by an administrator
  * (BR-301) and administrators are created by other administrators (docs/03 §1),
- * so a public endpoint must not be able to mint either. Those paths belong to
- * their own modules and are not part of this phase.
+ * so a public endpoint must not be able to mint either.
  *
- * NOTE on enumeration: a duplicate registration necessarily returns a conflict,
- * which reveals that an account exists for that identifier. The proper fix is
- * verification-first registration - accept the request, send an OTP, and only
- * then create the identity - which needs the `otp_challenges` table that this
- * phase does not create. Until then the exposure is limited by the strict rate
- * limit on this route, and the error deliberately does not say WHICH of phone
- * or email collided.
+ * VERIFICATION-FIRST. The SIGNUP code is checked before anything else, so the
+ * conflict answers below are only ever given to someone who controls the
+ * number - which removes the enumeration the old unverified register allowed,
+ * and means no account can hold a mobile number its owner did not prove. An
+ * email conflict is still disclosed to that verified caller; it is bounded by
+ * the per-number OTP send limits.
+ *
+ * The account can then sign in with mobile + OTP, or mobile/email + password.
  */
-export const register = async ({ phone, email, password, consentVersion, context }) => {
+export const register = async ({ phone, code, email, password, consentVersion, context }) => {
   const principal = PRINCIPALS.CUSTOMER;
 
-  const existing = await userRepository.findByIdentifierForAuth({
-    principal,
-    ...(phone ? { phone } : { email }),
-  });
+  await verifyOtp({ identifier: phone, principal, purpose: OTP_PURPOSE.SIGNUP, code });
 
-  if (existing) {
-    throw new ConflictError('An account with these details already exists', {
+  if (await userRepository.findByIdentifierForAuth({ principal, phone })) {
+    throw new ConflictError('An account already exists for this mobile number. Please sign in.', {
       code: ERROR_CODES.ACCOUNT_ALREADY_EXISTS,
+      details: { field: 'phone' },
     });
   }
 
-  const passwordHash = password ? await hashPassword(password) : null;
+  if (email && (await userRepository.findByIdentifierForAuth({ principal, email }))) {
+    throw new ConflictError('This email is already used by another account', {
+      code: ERROR_CODES.ACCOUNT_ALREADY_EXISTS,
+      details: { field: 'email' },
+    });
+  }
+
+  const passwordHash = await hashPassword(password);
 
   const user = await userRepository.createWithRole({
     principal,
@@ -127,21 +143,24 @@ export const register = async ({ phone, email, password, consentVersion, context
     passwordHash,
     consentVersion,
     roleCode: DEFAULT_ROLE_BY_PRINCIPAL[principal],
+    phoneVerified: true,
   });
 
   const { session, refreshToken } = await startSession({ userId: user.id, ...context });
+  await userRepository.touchLastLogin(user.id);
 
-  log.info({ userId: user.id, principal }, 'identity registered');
+  log.info({ userId: user.id, principal }, 'identity registered with password');
 
-  return issueTokens({ user, sessionId: session.id, refreshToken });
+  return issueTokens({ user: { ...user, passwordHash }, sessionId: session.id, refreshToken });
 };
 
 /**
  * Authenticate with a password.
  *
- * Per BR-101 customers and drivers are intended to authenticate by OTP; this
- * password path is what administrators use, and is the foundation the OTP flow
- * will reuse once it can persist challenges.
+ * Every principal may use it: administrators always, customers and drivers
+ * as the alternative to OTP, by mobile OR email. It succeeds only for accounts
+ * that have a password (set at sign-up, by an admin at driver onboarding, or
+ * via set/reset password).
  *
  * Every failure returns the SAME error - INVALID_CREDENTIALS - whether the
  * account is unknown, has no password set, or the password is wrong. The
@@ -186,9 +205,8 @@ export const login = async ({ principal, phone, email, password, context }) => {
 /**
  * Authenticate with a one-time code.
  *
- * This is the flow BR-101 actually specifies for customers and drivers - "no
- * password is required for the customer app". The password path above is what
- * administrators use.
+ * The passwordless path for customers and drivers (BR-101). Accounts that
+ * also have a password can use either.
  *
  * SIGNUP creates the identity on first successful verification, so there is no
  * separate registration step and therefore nothing to enumerate: an unknown
@@ -246,7 +264,7 @@ export const authenticateWithOtp = async ({ phone, principal, purpose, code, con
 export const refresh = async ({ refreshToken, context }) => {
   const payload = verifyRefreshToken(refreshToken);
 
-  const user = await userRepository.findByIdWithRoles(payload.sub);
+  const user = await userRepository.findByIdForAuth(payload.sub);
 
   if (!user) {
     throw new UnauthorizedError('Invalid credentials', {
@@ -295,11 +313,124 @@ export const logoutAll = async ({ userId }) => revokeAllSessions({ userId, reaso
 
 /** The authenticated caller's own identity, roles and permissions. */
 export const getCurrentUser = async (userId) => {
-  const user = await userRepository.findByIdWithRoles(userId);
+  const user = await userRepository.findByIdForAuth(userId);
 
   if (!user) {
     throw new NotFoundError('User not found');
   }
+
+  const { roles, permissions } = flattenAuthorisation(user);
+
+  return { user: toPublicUser(user), roles, permissions };
+};
+
+/**
+ * Forgotten password, by mobile + PASSWORD_RESET code.
+ *
+ * Also the way an OTP-only account gets its first password without signing
+ * in. Every existing session is revoked (a reset usually means the old
+ * password may be known to someone else) and a fresh one is started, so the
+ * caller is signed in on return.
+ */
+export const resetPassword = async ({ phone, principal, code, newPassword, context }) => {
+  await verifyOtp({ identifier: phone, principal, purpose: OTP_PURPOSE.PASSWORD_RESET, code });
+
+  const user = await userRepository.findByIdentifierForAuth({ principal, phone });
+
+  if (!user) {
+    throw new UnauthorizedError('No account exists for this number', {
+      code: ERROR_CODES.INVALID_CREDENTIALS,
+    });
+  }
+
+  await assertUsableAccount(user);
+
+  const passwordHash = await hashPassword(newPassword);
+  await userRepository.setPasswordHash(user.id, passwordHash);
+  await userRepository.markPhoneVerified(user.id);
+
+  await revokeAllSessions({
+    userId: user.id,
+    reason: SESSION_REVOCATION_REASON.PASSWORD_CHANGED,
+  });
+
+  const { session, refreshToken } = await startSession({ userId: user.id, ...context });
+  await userRepository.touchLastLogin(user.id);
+
+  log.info({ userId: user.id, principal }, 'password reset via OTP');
+
+  return issueTokens({ user: { ...user, passwordHash }, sessionId: session.id, refreshToken });
+};
+
+/**
+ * Set (first time) or change the signed-in caller's password.
+ *
+ * An account that already has a password must present it: a stolen access
+ * token alone must not be enough to lock the owner out. An OTP-only account
+ * has nothing to present, and its session already proves the number.
+ *
+ * Other sessions are revoked; the calling one survives.
+ */
+export const changePassword = async ({ userId, sessionId, currentPassword, newPassword }) => {
+  const user = await userRepository.findByIdForAuth(userId);
+
+  if (!user) {
+    throw new NotFoundError('User not found');
+  }
+
+  if (user.passwordHash) {
+    const matches = currentPassword
+      ? await verifyPassword(user.passwordHash, currentPassword)
+      : false;
+
+    if (!matches) {
+      // 400, not 401: the caller IS authenticated, and a 401 would send the
+      // apps' interceptors into a pointless token refresh.
+      throw new BadRequestError('Current password is incorrect', {
+        code: ERROR_CODES.CURRENT_PASSWORD_INCORRECT,
+      });
+    }
+  }
+
+  await userRepository.setPasswordHash(user.id, await hashPassword(newPassword));
+
+  const revoked = await revokeAllSessions({
+    userId,
+    reason: SESSION_REVOCATION_REASON.PASSWORD_CHANGED,
+    exceptSessionId: sessionId,
+  });
+
+  log.info({ userId, firstPassword: !user.passwordHash }, 'password set');
+
+  return { hasPassword: true, revokedSessions: revoked?.revokedCount ?? 0 };
+};
+
+/**
+ * Add, change or remove (null) the caller's email - their alias for password
+ * sign-in. Unique per principal, like the phone.
+ */
+export const updateMe = async ({ userId, email }) => {
+  const current = await userRepository.findByIdForAuth(userId);
+
+  if (!current) {
+    throw new NotFoundError('User not found');
+  }
+
+  if (email && email !== current.email) {
+    const taken = await userRepository.findByIdentifierForAuth({
+      principal: current.principal,
+      email,
+    });
+
+    if (taken) {
+      throw new ConflictError('This email is already used by another account', {
+        code: ERROR_CODES.ACCOUNT_ALREADY_EXISTS,
+        details: { field: 'email' },
+      });
+    }
+  }
+
+  const user = email === current.email ? current : await userRepository.updateEmail(userId, email);
 
   const { roles, permissions } = flattenAuthorisation(user);
 

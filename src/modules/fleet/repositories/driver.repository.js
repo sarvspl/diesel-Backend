@@ -19,7 +19,7 @@ const DRIVER_LIST_FIELDS = {
   joinedOn: true,
   createdAt: true,
   updatedAt: true,
-  user: { select: { id: true, phone: true, status: true } },
+  user: { select: { id: true, phone: true, email: true, status: true } },
 };
 
 /** Detail view. Includes the licence number; only the single-driver read uses it. */
@@ -55,8 +55,7 @@ export const createIn = async (client, { data, actorUserId }) =>
     select: DRIVER_DETAIL_FIELDS,
   });
 
-export const create = async ({ data, actorUserId }) =>
-  createIn(prisma, { data, actorUserId });
+export const create = async ({ data, actorUserId }) => createIn(prisma, { data, actorUserId });
 
 export const update = async ({ id, data, actorUserId }) =>
   prisma.driverProfile.update({

@@ -70,15 +70,27 @@ describe('OTP request schema', () => {
   });
 
   it('rejects a purpose that is not publicly requestable', () => {
-    // PASSWORD_RESET and PHONE_CHANGE have no implemented flow; exposing them
-    // would issue codes for an operation nothing verifies.
-    for (const purpose of ['PASSWORD_RESET', 'PHONE_CHANGE', 'EMAIL_VERIFICATION']) {
+    // PHONE_CHANGE has no implemented flow; exposing it would issue codes for
+    // an operation nothing verifies.
+    for (const purpose of ['PHONE_CHANGE', 'EMAIL_VERIFICATION']) {
       assert.equal(
         otpRequestSchema.body.safeParse({ ...valid, purpose }).success,
         false,
         `${purpose} should not be publicly requestable`
       );
     }
+  });
+
+  it('accepts PASSWORD_RESET, which POST /auth/password/reset verifies', () => {
+    assert.equal(
+      otpRequestSchema.body.safeParse({ ...valid, purpose: 'PASSWORD_RESET' }).success,
+      true
+    );
+  });
+
+  it('does not let a PASSWORD_RESET code be spent as a sign-in code', () => {
+    const verify = { ...valid, purpose: 'PASSWORD_RESET', code: '123456' };
+    assert.equal(otpVerifySchema.body.safeParse(verify).success, false);
   });
 
   it('rejects a non-Indian number', () => {

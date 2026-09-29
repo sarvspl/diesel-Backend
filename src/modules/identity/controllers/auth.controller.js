@@ -23,12 +23,13 @@ const deviceContext = (req) => ({
   userAgent: req.get('user-agent')?.slice(0, 512),
 });
 
-/** POST /api/v1/auth/register */
+/** POST /api/v1/auth/register - customer sign-up, mobile proven by a SIGNUP code. */
 export const register = async (req, res) => {
-  const { phone, email, password, consentVersion } = req.validated.body;
+  const { phone, code, email, password, consentVersion } = req.validated.body;
 
   const result = await authService.register({
     phone,
+    code,
     email,
     password,
     consentVersion,
@@ -119,6 +120,45 @@ export const logoutAll = async (req, res) => {
   const result = await authService.logoutAll({ userId: req.auth.userId });
 
   return sendSuccess(res, { message: 'Logged out of all devices', data: result });
+};
+
+/** POST /api/v1/auth/password/reset - forgotten password, by mobile + OTP. */
+export const resetPassword = async (req, res) => {
+  const { phone, principal, code, newPassword } = req.validated.body;
+
+  const result = await authService.resetPassword({
+    phone,
+    principal,
+    code,
+    newPassword,
+    context: deviceContext(req),
+  });
+
+  return sendSuccess(res, { message: 'Password reset successfully', data: result });
+};
+
+/** POST /api/v1/auth/password - set or change the caller's password. */
+export const changePassword = async (req, res) => {
+  const { currentPassword, newPassword } = req.validated.body;
+
+  const result = await authService.changePassword({
+    userId: req.auth.userId,
+    sessionId: req.auth.sessionId,
+    currentPassword,
+    newPassword,
+  });
+
+  return sendSuccess(res, { message: 'Password updated successfully', data: result });
+};
+
+/** PATCH /api/v1/auth/me - update the caller's email (password-login alias). */
+export const updateMe = async (req, res) => {
+  const result = await authService.updateMe({
+    userId: req.auth.userId,
+    email: req.validated.body.email,
+  });
+
+  return sendSuccess(res, { message: 'Account updated', data: result });
 };
 
 /** GET /api/v1/auth/me */

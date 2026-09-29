@@ -5,6 +5,7 @@ import { DEFAULT_ROLE_BY_PRINCIPAL, PRINCIPALS } from '../../../shared/constants
 import { BadRequestError, ConflictError, NotFoundError } from '../../../shared/errors/index.js';
 import { createLogger } from '../../../shared/logger/index.js';
 import * as userRepository from '../../identity/repositories/user.repository.js';
+import { hashPassword } from '../../identity/services/password.service.js';
 import * as driverRepository from '../repositories/driver.repository.js';
 import * as inventoryRepository from '../repositories/inventory.repository.js';
 import * as vehicleRepository from '../repositories/vehicle.repository.js';
@@ -36,6 +37,7 @@ const toPublicDriver = (driver, { includeLicenseNumber = false } = {}) => ({
   employeeCode: driver.employeeCode,
   fullName: driver.fullName,
   phone: driver.user?.phone ?? null,
+  email: driver.user?.email ?? null,
   accountStatus: driver.user?.status ?? null,
   employmentStatus: driver.employmentStatus,
   availability: driver.availability,
@@ -111,9 +113,10 @@ export const getDriver = async (id) => {
  * OTP sign-in, which is exactly what `authenticateWithOtp` records. Marking it
  * verified here would forge that proof.
  *
- * No password is set. Drivers authenticate by OTP only.
+ * `email` / `password` are optional. With a password the driver can sign in by
+ * mobile/email + password as well as by OTP.
  */
-export const onboardDriver = async ({ actorUserId, phone, ...input }) => {
+export const onboardDriver = async ({ actorUserId, phone, email, password, ...input }) => {
   const existing = await userRepository.findByIdentifierForAuth({
     principal: PRINCIPALS.DRIVER,
     phone,
@@ -126,10 +129,26 @@ export const onboardDriver = async ({ actorUserId, phone, ...input }) => {
     });
   }
 
+  if (
+    email &&
+    (await userRepository.findByIdentifierForAuth({ principal: PRINCIPALS.DRIVER, email }))
+  ) {
+    throw new ConflictError('A driver account already exists for that email', {
+      code: ERROR_CODES.ACCOUNT_ALREADY_EXISTS,
+      details: { email },
+    });
+  }
+
+  // Hashed before the transaction: Argon2 is deliberately slow and must not
+  // hold a database transaction open.
+  const passwordHash = password ? await hashPassword(password) : null;
+
   const driver = await prisma.$transaction(async (tx) => {
     const user = await userRepository.createWithRoleIn(tx, {
       principal: PRINCIPALS.DRIVER,
       phone,
+      email,
+      passwordHash,
       roleCode: DEFAULT_ROLE_BY_PRINCIPAL[PRINCIPALS.DRIVER],
       phoneVerified: false,
     });
@@ -151,10 +170,7 @@ export const onboardDriver = async ({ actorUserId, phone, ...input }) => {
     });
   });
 
-  log.info(
-    { driverProfileId: driver.id, userId: driver.userId, actorUserId },
-    'driver onboarded'
-  );
+  log.info({ driverProfileId: driver.id, userId: driver.userId, actorUserId }, 'driver onboarded');
 
   return toPublicDriver(driver, { includeLicenseNumber: true });
 };

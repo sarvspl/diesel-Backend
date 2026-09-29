@@ -50,7 +50,7 @@ All authenticated calls need:
 Authorization: Bearer <accessToken>
 ```
 Missing → `401 TOKEN_MISSING`; malformed → `401 TOKEN_INVALID`; expired →
-`401 TOKEN_EXPIRED` (→ refresh, see §2.4).
+`401 TOKEN_EXPIRED` (→ refresh, see §2.9).
 
 Three account types ("principals"): `CUSTOMER`, `DRIVER`, `ADMIN`. A token is bound
 to one principal. Calling an endpoint with the wrong principal → `403 WRONG_PRINCIPAL`.
@@ -62,10 +62,45 @@ All endpoints are rate-limited; `/auth/*` more strictly. On a limit you get
 
 ---
 
-## 2. Auth flow (Customer & Driver = OTP)
+## 2. Auth flow (Customer & Driver)
 
-Customers and drivers sign in with a phone OTP. (Admins use password login; your apps
-don't need that.)
+Customers and drivers have **two ways to sign in to the same account**:
+
+| Method | Calls | Works for |
+|---|---|---|
+| **Mobile + OTP** | `otp/request` → `otp/verify` (§2.1, §2.2) | every account |
+| **Mobile or email + password** | `login` (§2.3) | accounts that have a password (`user.hasPassword`) |
+
+Where a password comes from:
+- **Customer** — chosen at sign-up (§2.4), or set later (§2.6 / §2.7).
+- **Driver** — drivers cannot self-register; ops creates the account and may set an
+  email + initial password. Otherwise the driver signs in by OTP and sets one in the app
+  (§2.7), or uses *Forgot password* (§2.6).
+
+Rules that apply to every call below:
+- `phone` is E.164 India: `+91` + 10 digits starting 6–9 (`+919812345678`).
+- `password` / `newPassword`: **12–128 characters**, no composition rules.
+- `email` is lower-cased by the server. Email is **not** verified yet, it is only a
+  second login identifier.
+- `principal` is always explicit (`CUSTOMER` in the customer app, `DRIVER` in the driver
+  app). The same number can be a customer and a driver — they are separate accounts.
+
+**Sign-in response** — `otp/verify`, `login`, `register`, `password/reset` and `refresh`
+all return the same `data`:
+```json
+{ "success": true, "data": {
+    "user": { "id","principal","phone","email","status",
+              "phoneVerified","emailVerified","hasPassword","createdAt" },
+    "roles": ["…"], "permissions": ["…"],
+    "tokens": { "accessToken": "…", "refreshToken": "…" }
+} }
+```
+Store both tokens securely. Use `accessToken` as the bearer; keep `refreshToken` for
+§2.9. `user.hasPassword` tells you whether to show *Set password* or *Change password*.
+
+> A `401` from these **unauthenticated** calls (`login`, `register`, `otp/*`,
+> `password/reset`) is a wrong credential, not an expired session — show the error, do
+> **not** run your refresh-token logic on it.
 
 ### 2.1 Request an OTP — `POST /auth/otp/request`
 No auth.
@@ -73,51 +108,131 @@ No auth.
 { "phone": "+919812345678", "principal": "CUSTOMER", "purpose": "LOGIN" }
 ```
 - `principal`: `CUSTOMER` or `DRIVER`.
-- `purpose`: `LOGIN` (existing user), `SIGNUP` (new customer — CUSTOMER only), or
-  `PHONE_VERIFICATION`.
+- `purpose`:
+  - `LOGIN` — sign in an existing account.
+  - `SIGNUP` — customer sign-up (CUSTOMER only). Use before §2.4, or with §2.2 for
+    passwordless sign-up.
+  - `PASSWORD_RESET` — forgot password (§2.6).
+  - `PHONE_VERIFICATION`.
 - Response `202`:
   ```json
   { "success": true, "data": { "challengeId": "…", "expiresAt": "…",
     "retryAfterSeconds": 30, "devCode": "123456" } }
   ```
   - **`devCode`** — the OTP itself. In production it is present **only because the
-    server currently runs with a fixed test OTP** (see §7 security note). Treat its
+    server currently runs with a fixed test OTP** (see §8 security note). Treat its
     presence as temporary; the real flow is "user reads SMS, types code."
+  - Resend: wait `retryAfterSeconds` (30 s, 60 s, 120 s, 300 s…). Too early →
+    `429 OTP_RESEND_TOO_SOON`; too many per hour → `429 OTP_RATE_LIMITED`.
+  - Each purpose has its own code: a `SIGNUP` code cannot be used for `PASSWORD_RESET`
+    and vice-versa. Codes are single-use.
 
-### 2.2 Verify the OTP → get tokens — `POST /auth/otp/verify`
+### 2.2 Sign in with OTP — `POST /auth/otp/verify`
 No auth.
 ```json
 { "phone": "+919812345678", "principal": "CUSTOMER", "purpose": "LOGIN", "code": "123456" }
 ```
-- Response `200`:
-  ```json
-  { "success": true, "data": {
-      "user": { "id","principal","phone","email","status","phoneVerified","emailVerified","createdAt" },
-      "roles": ["…"], "permissions": ["…"],
-      "tokens": { "accessToken": "…", "refreshToken": "…" }
-  } }
-  ```
-- Store both tokens securely. Use `accessToken` as the bearer; keep `refreshToken`
-  for §2.4.
-- First-time `CUSTOMER` + `SIGNUP` creates the account. `DRIVER` accounts must already
-  exist (created by admin) — an unknown driver number → `401 INVALID_CREDENTIALS`.
-- Wrong/expired code → `401 OTP_INVALID`; too many tries → `401 OTP_ATTEMPTS_EXCEEDED`.
+- `purpose`: `LOGIN`, `SIGNUP` or `PHONE_VERIFICATION` (not `PASSWORD_RESET`).
+- Response `200`: the sign-in response above.
+- `CUSTOMER` + `SIGNUP` **creates the account on first use and signs in an existing
+  one** — i.e. passwordless sign-up. That account has no password until one is set (§2.7).
+- `DRIVER` accounts must already exist (created by admin) — an unknown driver number →
+  `401 INVALID_CREDENTIALS`. An unknown number with `LOGIN` → same.
+- Wrong/expired code → `401 OTP_INVALID`; too many tries → `401 OTP_ATTEMPTS_EXCEEDED`
+  (request a new code).
 
-### 2.3 Optional device metadata
-Any auth call (`register`/`login`/`otp/verify`) may include:
+### 2.3 Sign in with password — `POST /auth/login`
+No auth. Send **exactly one** of `phone` or `email`:
+```json
+{ "principal": "DRIVER", "phone": "+919812345678", "password": "my-long-password" }
+{ "principal": "CUSTOMER", "email": "asha@example.com", "password": "my-long-password" }
+```
+- Response `200`: the sign-in response above.
+- Suggested UI: one field *"Mobile number or email"* — contains `@` → send `email`,
+  otherwise normalise to `+91XXXXXXXXXX` and send `phone`.
+- Unknown account, wrong password, and **account without a password** all return the
+  same `401 INVALID_CREDENTIALS` (so nobody can probe which numbers are registered).
+  Show: *"Incorrect mobile/email or password — or sign in with OTP / use Forgot
+  password."*
+- Blocked / deleted account → `401 ACCOUNT_BLOCKED` / `ACCOUNT_DELETED`.
+
+### 2.4 Customer sign-up with password — `POST /auth/register`
+CUSTOMER only. No auth. The mobile number is verified by OTP **in the same call**:
+
+1. Sign-up form: mobile, email (optional), password, confirm password.
+2. `POST /auth/otp/request` `{ phone, principal: "CUSTOMER", purpose: "SIGNUP" }`
+3. User types the code, then:
+```json
+{ "phone": "+919812345678", "code": "123456",
+  "password": "my-long-password", "email": "asha@example.com",
+  "consentVersion": "2026-07-01" }
+```
+- `email` and `consentVersion` are optional.
+- Response `201`: the sign-in response above (`hasPassword: true`, `phoneVerified: true`).
+  The user can now sign in either way (§2.2 or §2.3).
+- Then create the customer profile as today: `POST /customers/register` (§3.1).
+- Errors:
+  - `401 OTP_INVALID` / `OTP_ATTEMPTS_EXCEEDED` — wrong code.
+  - `409 ACCOUNT_ALREADY_EXISTS`, `error.details.field = "phone"` — number already
+    registered → send the user to sign in.
+  - `409 ACCOUNT_ALREADY_EXISTS`, `error.details.field = "email"` — email used by another
+    account. The code was spent: let the user fix/remove the email and request a new code.
+
+### 2.5 Driver accounts
+Drivers **cannot** sign up in the app. Ops creates the driver in the admin panel
+(`POST /admin/drivers`) with the mobile number and, optionally, an email and initial
+password. If no password was set, the driver signs in by OTP (`purpose: "LOGIN"`) and can
+then set one (§2.7) — or use *Forgot password* (§2.6) straight from the login screen.
+
+### 2.6 Forgot password — `POST /auth/password/reset`
+No auth. Customer or driver. Also the way an OTP-only account gets its first password
+without signing in.
+
+1. `POST /auth/otp/request` `{ phone, principal, purpose: "PASSWORD_RESET" }`
+2. User types the code and a new password, then:
+```json
+{ "phone": "+919812345678", "principal": "DRIVER",
+  "code": "123456", "newPassword": "my-new-long-password" }
+```
+- Response `200`: the sign-in response above — the user is **signed in**.
+- **All other sessions/devices are signed out.**
+- `401 OTP_INVALID` / `OTP_ATTEMPTS_EXCEEDED` — wrong code.
+- `401 INVALID_CREDENTIALS` — no account for this number and principal.
+
+### 2.7 Set / change password (signed in) — `POST /auth/password`
+Bearer token.
+```json
+{ "currentPassword": "old-long-password", "newPassword": "my-new-long-password" }
+```
+- `currentPassword` is **required only if `user.hasPassword` is true**. For an OTP-only
+  account (first password) send just `newPassword`.
+- Response `200`: `{ "hasPassword": true, "revokedSessions": 2 }` — every **other**
+  session is signed out; this one keeps working.
+- Wrong or missing current password → **`400 CURRENT_PASSWORD_INCORRECT`** (a 400, so it
+  never triggers your token-refresh logic).
+
+### 2.8 Account email — `GET /auth/me`, `PATCH /auth/me`
+Bearer token.
+- `GET /auth/me` → `{ user, roles, permissions }` (includes `hasPassword`).
+- `PATCH /auth/me` `{ "email": "asha@example.com" }` adds/changes the email used for
+  password sign-in; `{ "email": null }` removes it. Changing it resets `emailVerified`.
+  Taken → `409 ACCOUNT_ALREADY_EXISTS` (`details.field = "email"`).
+
+### Optional device metadata
+Any sign-in call (`register`/`login`/`otp/verify`/`password/reset`) may include:
 `deviceId`, `deviceName`, `platform` (`ANDROID|IOS|WEB|UNKNOWN`), `appVersion`.
 Recommended so the user can see/manage their devices.
 
-### 2.4 Refresh tokens — `POST /auth/refresh`
+### 2.9 Refresh tokens — `POST /auth/refresh`
 No bearer (the refresh token *is* the credential).
 ```json
 { "refreshToken": "…" }
 ```
-- Response `200`: same shape as verify, with a **new** token pair. The old refresh
+- Response `200`: the sign-in response, with a **new** token pair. The old refresh
   token is rotated (invalidated) — always replace both with the new pair.
 - Do this when an access token returns `401 TOKEN_EXPIRED`, then retry the call once.
 
-### 2.5 Session management
+### 2.10 Session management
 - `GET /auth/me` — current user, roles, permissions.
 - `GET /auth/sessions` — list this user's sessions/devices (`isCurrent` flags the one in use).
 - `DELETE /auth/sessions/:id` — revoke one device.
@@ -382,12 +497,16 @@ FYFT tankers are `STOCK`. **`status`:** `IDLE, DISPENSING, FAULT`.
 
 | Code | When | What the app should do |
 |---|---|---|
-| `TOKEN_EXPIRED` | access token old | refresh (§2.4), retry once |
+| `TOKEN_EXPIRED` | access token old | refresh (§2.9), retry once |
 | `TOKEN_MISSING` / `TOKEN_INVALID` | bad/absent bearer | send to login |
 | `WRONG_PRINCIPAL` | customer token on driver route (or vice-versa) | bug in app — fix the token used |
 | `VALIDATION_ERROR` | bad request body/params | show per-field `error.details` |
 | `OTP_INVALID` / `OTP_ATTEMPTS_EXCEEDED` | wrong/too many OTP | re-request |
 | `OTP_RESEND_TOO_SOON` / `OTP_RATE_LIMITED` | 429 | wait `details.retryAfterSeconds` |
+| `INVALID_CREDENTIALS` (401) | wrong mobile/email/password, no password set, or unknown account | show error; offer OTP sign-in / Forgot password — never refresh |
+| `ACCOUNT_ALREADY_EXISTS` (409) | sign-up/email change; `details.field` = `phone` or `email` | phone → go to sign-in; email → change it |
+| `CURRENT_PASSWORD_INCORRECT` (400) | change password with wrong current one | ask again |
+| `ACCOUNT_BLOCKED` / `ACCOUNT_DELETED` (401) | account disabled | show message, stay on login |
 | `PROFILE_NOT_FOUND` | customer has no profile | send to profile setup |
 | `QUOTE_EXPIRED` (410) / `QUOTE_ALREADY_USED` | stale/used quote | get a fresh quote |
 | `NO_ACTIVE_PRICE` / `NO_DELIVERY_CHARGE_RULE` / `BELOW_MINIMUM_ORDER_QUANTITY` | can't price | show reason, block checkout |
@@ -407,6 +526,8 @@ FYFT tankers are `STOCK`. **`status`:** `IDLE, DISPENSING, FAULT`.
    echoed back in `devCode`. This is a **temporary testing setting** and will be turned
    off before real launch — do **not** design the app to depend on `devCode`; read the
    OTP from SMS as normal.
+   Password sign-in is **not** affected by this bypass, but while it is on, anyone who
+   knows a number can still get in via OTP or reset its password via `PASSWORD_RESET`.
 2. **Never ship any third-party credential in the app.** The IoT vendor's code, SMS
    keys, etc. all live on our server. Your app only ever holds the user's own
    access/refresh tokens.

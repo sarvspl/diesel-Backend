@@ -77,8 +77,10 @@ export const listDriversSchema = {
 /**
  * Onboard a driver: identity and employment record in one call.
  *
- * `phone` is the only identifier. It is what the driver signs in with, and the
- * app is OTP-only — there is no password to set and no email to collect.
+ * `phone` is required: the driver signs in with it by OTP. `email` and
+ * `password` are optional; when a password is given the driver can also sign
+ * in with mobile/email + password. Without one the driver can set it later in
+ * the app (POST /auth/password) or via forgot-password (POST /auth/password/reset).
  *
  * `fullName` is REQUIRED here although the profile column is nullable. A
  * dispatcher assigning work reads a name, and a customer expecting a delivery
@@ -89,6 +91,19 @@ export const listDriversSchema = {
 export const onboardDriverSchema = {
   body: z.object({
     phone: indianPhone,
+    email: z
+      .string()
+      .trim()
+      .toLowerCase()
+      .email('Must be a valid email address')
+      .max(255)
+      .optional(),
+    /** Same rule as identity's password schema: 12..128 characters. */
+    password: z
+      .string()
+      .min(12, 'Password must be at least 12 characters')
+      .max(128, 'Password must be at most 128 characters')
+      .optional(),
     fullName: z.string().trim().min(1).max(120),
     employeeCode: z.string().trim().max(32).optional(),
     licenseNumber: z.string().trim().max(64).optional(),

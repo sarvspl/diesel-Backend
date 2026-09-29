@@ -9,12 +9,15 @@ import { validate } from '../../shared/middleware/validate.js';
 import * as authController from './controllers/auth.controller.js';
 import * as sessionController from './controllers/session.controller.js';
 import {
+  changePasswordSchema,
   loginSchema,
   otpRequestSchema,
   otpVerifySchema,
+  passwordResetSchema,
   refreshSchema,
   registerSchema,
   sessionIdSchema,
+  updateMeSchema,
 } from './identity.schema.js';
 
 /**
@@ -28,9 +31,23 @@ const router = Router();
 // --- Unauthenticated -------------------------------------------------------
 // Strict rate limiting: these are the endpoints an attacker actually targets.
 
+/**
+ * Two ways in for customers and drivers, on the same account:
+ *   - mobile + OTP            /otp/request -> /otp/verify
+ *   - mobile or email + password   /login
+ * Customer sign-up with a password is /register (needs a SIGNUP code), and
+ * /password/reset (needs a PASSWORD_RESET code) recovers or first-sets one.
+ */
 router.post('/register', authRateLimiter, validate(registerSchema), authController.register);
 
 router.post('/login', authRateLimiter, validate(loginSchema), authController.login);
+
+router.post(
+  '/password/reset',
+  authRateLimiter,
+  validate(passwordResetSchema),
+  authController.resetPassword
+);
 
 /**
  * OTP - the customer and driver authentication path (BR-101).
@@ -57,6 +74,24 @@ router.post('/logout', authenticate, authController.logout);
 router.post('/logout-all', authenticate, authController.logoutAll);
 
 router.get('/me', authenticate, requirePermission(PERMISSIONS.USER_READ_SELF), authController.me);
+
+router.patch(
+  '/me',
+  authenticate,
+  requirePermission(PERMISSIONS.USER_UPDATE_SELF),
+  validate(updateMeSchema),
+  authController.updateMe
+);
+
+/** Rate-limited like login: it checks a password, so it is a guessing oracle too. */
+router.post(
+  '/password',
+  authRateLimiter,
+  authenticate,
+  requirePermission(PERMISSIONS.USER_UPDATE_SELF),
+  validate(changePasswordSchema),
+  authController.changePassword
+);
 
 router.get(
   '/sessions',

@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
-import { DEVICE_PLATFORM, PUBLIC_OTP_PURPOSES } from '../../shared/constants/identity.js';
+import {
+  DEVICE_PLATFORM,
+  PUBLIC_OTP_PURPOSES,
+  SIGN_IN_OTP_PURPOSES,
+} from '../../shared/constants/identity.js';
 import { PRINCIPALS } from '../../shared/constants/rbac.js';
 
 /**
@@ -64,17 +68,36 @@ const deviceContext = {
   appVersion: z.string().trim().max(32).optional(),
 };
 
+/**
+ * Digits only, and bounded. An unbounded field here feeds straight into Argon2
+ * verification, whose cost scales with input length.
+ */
+const otpCode = z
+  .string()
+  .trim()
+  .regex(/^\d{4,10}$/, 'Code must be 4 to 10 digits');
+
+/**
+ * Customer sign-up with a password.
+ *
+ * Verification-first: the mobile number is proven by a SIGNUP code (from
+ * POST /auth/otp/request) in the same call that creates the identity, so an
+ * account can never hold a number its owner did not prove. The resulting
+ * account signs in either way - mobile + OTP, or mobile/email + password.
+ *
+ * Email is optional (BR-106) and, when given, becomes a second password
+ * identifier. It is NOT verified here.
+ */
 export const registerSchema = {
-  body: oneIdentifier(
-    z.object({
-      phone: phone.optional(),
-      email: email.optional(),
-      password,
-      /** DPDP Act 2023 consent capture (BR-107). */
-      consentVersion: z.string().trim().max(32).optional(),
-      ...deviceContext,
-    })
-  ),
+  body: z.object({
+    phone,
+    code: otpCode,
+    password,
+    email: email.optional(),
+    /** DPDP Act 2023 consent capture (BR-107). */
+    consentVersion: z.string().trim().max(32).optional(),
+    ...deviceContext,
+  }),
 };
 
 export const loginSchema = {
@@ -125,15 +148,43 @@ export const otpVerifySchema = {
   body: z.object({
     phone,
     principal: z.enum([PRINCIPALS.CUSTOMER, PRINCIPALS.DRIVER]),
-    purpose: z.enum(PUBLIC_OTP_PURPOSES),
-    /**
-     * Digits only, and bounded. An unbounded field here feeds straight into
-     * Argon2 verification, whose cost scales with input length.
-     */
-    code: z
-      .string()
-      .trim()
-      .regex(/^\d{4,10}$/, 'Code must be 4 to 10 digits'),
+    purpose: z.enum(SIGN_IN_OTP_PURPOSES),
+    code: otpCode,
     ...deviceContext,
+  }),
+};
+
+/**
+ * Forgotten password: prove the mobile number with a PASSWORD_RESET code and
+ * set a new password in one call. Also how an OTP-only account (every driver
+ * onboarded without a password) gets its first one without signing in.
+ */
+export const passwordResetSchema = {
+  body: z.object({
+    phone,
+    principal: z.enum([PRINCIPALS.CUSTOMER, PRINCIPALS.DRIVER]),
+    code: otpCode,
+    newPassword: password,
+    ...deviceContext,
+  }),
+};
+
+/**
+ * Set or change the signed-in caller's password.
+ *
+ * `currentPassword` is required only when the account already has one; the
+ * service enforces that, because the schema cannot see the account.
+ */
+export const changePasswordSchema = {
+  body: z.object({
+    currentPassword: z.string().min(1).max(128).optional(),
+    newPassword: password,
+  }),
+};
+
+/** Add, change or remove (`null`) the caller's email - their password-login alias. */
+export const updateMeSchema = {
+  body: z.object({
+    email: email.nullable(),
   }),
 };

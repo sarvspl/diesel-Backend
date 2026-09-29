@@ -32,6 +32,8 @@ export const ERROR_CODES = Object.freeze({
   ACCOUNT_BLOCKED: 'ACCOUNT_BLOCKED',
   ACCOUNT_DELETED: 'ACCOUNT_DELETED',
   PASSWORD_NOT_SET: 'PASSWORD_NOT_SET',
+  /// Set/change password: the account has a password and it was not presented correctly.
+  CURRENT_PASSWORD_INCORRECT: 'CURRENT_PASSWORD_INCORRECT',
 
   TOKEN_MISSING: 'TOKEN_MISSING',
   TOKEN_INVALID: 'TOKEN_INVALID',

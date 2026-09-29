@@ -51,11 +51,22 @@ export const OTP_PURPOSE = Object.freeze({
 /**
  * Purposes a client may request through the public OTP endpoint.
  *
- * PASSWORD_RESET and PHONE_CHANGE are deliberately excluded: they belong to
- * flows that do not exist yet, and exposing them now would let a caller obtain
- * a code for an operation nothing verifies.
+ * PHONE_CHANGE is deliberately excluded: its flow does not exist yet, and
+ * exposing it now would let a caller obtain a code for an operation nothing
+ * verifies. PASSWORD_RESET is verified by POST /auth/password/reset.
  */
 export const PUBLIC_OTP_PURPOSES = Object.freeze([
+  OTP_PURPOSE.LOGIN,
+  OTP_PURPOSE.SIGNUP,
+  OTP_PURPOSE.PHONE_VERIFICATION,
+  OTP_PURPOSE.PASSWORD_RESET,
+]);
+
+/**
+ * Purposes POST /auth/otp/verify accepts. PASSWORD_RESET is spent only by the
+ * reset endpoint, so a reset code cannot double as a plain sign-in code.
+ */
+export const SIGN_IN_OTP_PURPOSES = Object.freeze([
   OTP_PURPOSE.LOGIN,
   OTP_PURPOSE.SIGNUP,
   OTP_PURPOSE.PHONE_VERIFICATION,

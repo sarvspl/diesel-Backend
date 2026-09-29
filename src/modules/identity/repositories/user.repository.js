@@ -171,3 +171,32 @@ export const touchLastLogin = async (id) =>
     data: { lastLoginAt: new Date() },
     select: { id: true },
   });
+
+/**
+ * By id, WITH the password hash - for the password-change check and for
+ * deriving `hasPassword`. Same rule as `findByIdentifierForAuth`: callers must
+ * never pass the row itself to a response.
+ */
+export const findByIdForAuth = async (id) =>
+  prisma.user.findUnique({
+    where: { id },
+    select: { ...WITH_ROLES, passwordHash: true },
+  });
+
+export const setPasswordHash = async (id, passwordHash) =>
+  prisma.user.update({
+    where: { id },
+    data: { passwordHash },
+    select: { id: true },
+  });
+
+/**
+ * Change the email and reset its verification: proof of the OLD address says
+ * nothing about the new one.
+ */
+export const updateEmail = async (id, email) =>
+  prisma.user.update({
+    where: { id },
+    data: { email, emailVerifiedAt: null },
+    select: { ...WITH_ROLES, passwordHash: true },
+  });
