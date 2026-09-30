@@ -1,3 +1,4 @@
+import { prisma } from '../../../infrastructure/database/prisma.js';
 import { ERROR_CODES } from '../../../shared/constants/error-codes.js';
 import { DRIVER_AVAILABILITY, DRIVER_EMPLOYMENT_STATUS } from '../../../shared/constants/fleet.js';
 import { ConflictError, ForbiddenError, NotFoundError } from '../../../shared/errors/index.js';
@@ -192,12 +193,8 @@ export const toSelfShift = (shift) => ({
   status: shift.status,
   startedAt: shift.startedAt,
   endedAt: shift.endedAt,
-  openingTotalizer: shift.openingMeterReading
-    ? String(shift.openingMeterReading.totalizer)
-    : null,
-  closingTotalizer: shift.closingMeterReading
-    ? String(shift.closingMeterReading.totalizer)
-    : null,
+  openingTotalizer: shift.openingMeterReading ? String(shift.openingMeterReading.totalizer) : null,
+  closingTotalizer: shift.closingMeterReading ? String(shift.closingMeterReading.totalizer) : null,
   openingFuelQuantity:
     shift.openingFuelQuantity === null || shift.openingFuelQuantity === undefined
       ? null
@@ -251,4 +248,19 @@ export const setAvailability = async ({ userId, availability }) => {
   log.info({ driverProfileId: driver.id, availability }, 'driver availability changed');
 
   return toSelfDriver({ ...updated, user: driver.user });
+};
+
+/**
+ * The driver edits their own display name. Phone and email are sign-in
+ * identities and stay admin-managed.
+ */
+export const updateSelf = async ({ userId, fullName }) => {
+  const driver = await resolveDriverProfile(userId);
+
+  await prisma.driverProfile.update({
+    where: { id: driver.id },
+    data: { fullName },
+  });
+
+  return getSelf(userId);
 };

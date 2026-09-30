@@ -337,3 +337,52 @@ export const routeToOrder = async ({ userId, orderId, latitude, longitude }) => 
 
   return { orderId, status: order.status, destination, route };
 };
+
+/**
+ * Hand an accepted order back, before the trip starts.
+ *
+ * ASSIGNED → ALLOCATING → ALLOCATION_FAILED: the second state is one nearby
+ * drivers can see and accept, so the order goes straight back to the pool.
+ * The fuel hold stays on this tanker until the next driver's accept moves it.
+ * Once the trip has started the driver must call dispatch instead: a customer
+ * is expecting that tanker.
+ */
+export const rejectOrder = async ({ userId, orderId, reason, requestId }) => {
+  const driver = await resolveDriverProfile(userId);
+  const order = await driverOrderRepository.findOrderForDriver({
+    driverProfileId: driver.id,
+    orderId,
+  });
+
+  if (!order) {
+    throw new NotFoundError('Order not found', { code: ERROR_CODES.ORDER_NOT_FOUND });
+  }
+
+  if (order.status !== ORDER_STATUS.ASSIGNED) {
+    throw new ConflictError('The trip has started. Call dispatch to hand this order back.', {
+      code: ERROR_CODES.INVALID_STATE_TRANSITION,
+      details: { currentStatus: order.status },
+    });
+  }
+
+  await transitionOrder({
+    orderId,
+    toStatus: ORDER_STATUS.ALLOCATING,
+    actorKind: ACTOR_KIND.SYSTEM,
+    reason: reason ? `Driver handed the order back: ${reason}` : 'Driver handed the order back',
+    expectedStatus: ORDER_STATUS.ASSIGNED,
+    metadata: { rejectedByDriverUserId: userId },
+    requestId,
+  });
+
+  await transitionOrder({
+    orderId,
+    toStatus: ORDER_STATUS.ALLOCATION_FAILED,
+    actorKind: ACTOR_KIND.SYSTEM,
+    reason: 'Returned to nearby drivers',
+    expectedStatus: ORDER_STATUS.ALLOCATING,
+    requestId,
+  });
+
+  log.info({ orderId, driverUserId: userId }, 'order handed back by driver');
+};

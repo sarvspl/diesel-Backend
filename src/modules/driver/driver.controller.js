@@ -61,6 +61,28 @@ export const getMe = async (req, res) => {
   return sendSuccess(res, { message: 'Driver profile retrieved', data: result });
 };
 
+/** PATCH /api/v1/driver/me */
+export const updateMe = async (req, res) => {
+  const result = await selfService.updateSelf({
+    userId: req.auth.userId,
+    fullName: req.validated.body.fullName,
+  });
+
+  return sendSuccess(res, { message: 'Profile updated', data: result });
+};
+
+/** POST /api/v1/driver/orders/:id/reject */
+export const rejectOrder = async (req, res) => {
+  await dispatchService.rejectOrder({
+    userId: req.auth.userId,
+    orderId: req.validated.params.id,
+    reason: req.validated.body.reason,
+    requestId: req.id,
+  });
+
+  return sendSuccess(res, { message: 'Order handed back', data: {} });
+};
+
 /** PATCH /api/v1/driver/availability */
 export const setAvailability = async (req, res) => {
   const driver = await selfService.setAvailability({

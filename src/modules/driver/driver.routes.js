@@ -15,9 +15,11 @@ import {
   locationSchema,
   nearbyRequestsSchema,
   orderIdSchema,
+  rejectOrderSchema,
   routeSchema,
   startDispensingSchema,
   startShiftSchema,
+  updateSelfSchema,
 } from './driver.schema.js';
 
 /**
@@ -41,6 +43,13 @@ router.use(authenticate, requirePrincipal(PRINCIPALS.DRIVER));
 
 /** Everything the app needs on launch: profile, vehicle, shift, blockers. */
 router.get('/me', requirePermission(PERMISSIONS.DRIVER_READ_SELF), controller.getMe);
+
+router.patch(
+  '/me',
+  requirePermission(PERMISSIONS.SHIFT_MANAGE_SELF),
+  validate(updateSelfSchema),
+  controller.updateMe
+);
 
 router.patch(
   '/availability',
@@ -98,6 +107,13 @@ router.get(
   requirePermission(PERMISSIONS.ORDER_READ_ASSIGNED),
   validate(nearbyRequestsSchema),
   controller.listNearbyRequests
+);
+
+router.post(
+  '/orders/:id/reject',
+  requirePermission(PERMISSIONS.DELIVERY_EXECUTE),
+  validate(rejectOrderSchema),
+  controller.rejectOrder
 );
 
 router.post(

@@ -95,6 +95,17 @@ export const orderIdSchema = {
   params: z.object({ id: uuid('Order id') }),
 };
 
+/** PATCH /driver/me — the driver's own display name. */
+export const updateSelfSchema = {
+  body: z.object({ fullName: z.string().trim().min(2).max(120) }),
+};
+
+/** POST /driver/orders/:id/reject — hand an ASSIGNED order back. */
+export const rejectOrderSchema = {
+  params: orderIdSchema.params,
+  body: z.object({ reason: z.string().trim().max(300).optional() }),
+};
+
 /** POST /driver/location */
 export const locationSchema = {
   body: z.object({ latitude, longitude }),
