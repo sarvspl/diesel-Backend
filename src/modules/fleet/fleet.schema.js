@@ -197,6 +197,14 @@ export const createVehicleSchema = {
     openingFuelQuantity: litres().default('0'),
     /** This tanker is fitted with a dezel4u/FYFT bowser monitor. */
     flowMeterEnabled: z.coerce.boolean().default(false),
+    /** smarttracker/dezel4u dispense-controller id; enables the pump-unlock step. */
+    iotDeviceId: z
+      .string()
+      .trim()
+      .max(32)
+      .regex(/^[A-Za-z0-9_-]*$/, 'Device id may contain only letters, digits, - and _')
+      .transform((v) => (v === '' ? null : v))
+      .optional(),
     ...complianceFields,
     notes: z.string().trim().max(2000).optional(),
   }),
@@ -221,6 +229,14 @@ export const updateVehicleSchema = {
       pucExpiry: isoDate.nullable().optional(),
       fitnessExpiry: isoDate.nullable().optional(),
       flowMeterEnabled: z.coerce.boolean().optional(),
+      iotDeviceId: z
+        .string()
+        .trim()
+        .max(32)
+        .regex(/^[A-Za-z0-9_-]*$/, 'Device id may contain only letters, digits, - and _')
+        .transform((v) => (v === '' ? null : v))
+        .nullable()
+        .optional(),
       notes: z.string().trim().max(2000).nullable().optional(),
     })
     .refine((body) => Object.keys(body).length > 0, 'Provide at least one field to update')

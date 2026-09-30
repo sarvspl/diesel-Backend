@@ -957,6 +957,13 @@ model DriverProfile {
   /// Axis 2 - driver-controlled availability. Independent of axis 1.
   availability DriverAvailability @default(OFFLINE)
 
+  /// Last position reported by the driver app (nearby requests, trip screen).
+  /// Feeds the customer's live-tracking map. Kept here rather than only on the
+  /// shift because a driver can accept and drive an order without a shift open.
+  lastLatitude   Decimal?  @map("last_latitude") @db.Decimal(10, 7)
+  lastLongitude  Decimal?  @map("last_longitude") @db.Decimal(10, 7)
+  lastLocationAt DateTime? @map("last_location_at") @db.Timestamptz(6)
+
   /// Internal operational notes. Never shown to the driver.
   notes String? @db.VarChar(2000)
 
@@ -1000,6 +1007,12 @@ model Vehicle {
   /// if it cannot be reached at delivery time, the driver falls back to manual.
   flowMeterEnabled Boolean @default(false) @map("flow_meter_enabled")
 
+  /// Device id on the smarttracker/dezel4u DISPENSE controller (e.g. "00001").
+  /// Set = the pump is unlocked through the IoT authorize API before the driver
+  /// dispenses; the API answers with an MPIN the driver keys in. Separate from
+  /// `flowMeterEnabled` (stock monitoring): a tanker can have either or both.
+  iotDeviceId String? @unique @map("iot_device_id") @db.VarChar(32)
+
   /// Compliance. BR-402: an expired calibration certificate or PESO licence
   /// EXCLUDES the vehicle from dispatch - dispensing on an uncalibrated meter
   /// is a Legal Metrology offence, not a policy preference.
@@ -1031,6 +1044,7 @@ model Vehicle {
   meterReadings MeterReading[]
   adjustments   InventoryAdjustment[]
   reservations  FuelReservation[]
+  iotAuthorizations IotDispenseAuthorization[]
 
   @@index([status])
   @@index([calibrationExpiry])
@@ -1726,6 +1740,9 @@ model Order {
   /// Delivery meter readings (DELIVERY_START / DELIVERY_END).
   meterReadings MeterReading[]
 
+  /// IoT pump unlock attempts (smarttracker authorize API).
+  iotAuthorizations IotDispenseAuthorization[]
+
   @@index([status, statusChangedAt])
   @@index([expiresAt])
   @@map("orders")
@@ -1831,6 +1848,45 @@ model FuelReservation {
   @@index([vehicleId, status])
   @@index([status, expiresAt])
   @@map("fuel_reservations")
+}
+
+/// One call to the IoT dispense-authorize API (smarttracker/dezel4u): "allow N
+/// litres on this tanker's pump". Every attempt is kept, failed ones too: an
+/// unlocked pump is fuel that can leave the tank, so the trail must show who
+/// asked and what the vendor said.
+///
+/// The MPIN is stored because the driver may need it shown again, and calling
+/// the vendor a second time would issue a SECOND authorization.
+model IotDispenseAuthorization {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  orderId String @map("order_id") @db.Uuid
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  vehicleId String  @map("vehicle_id") @db.Uuid
+  vehicle   Vehicle @relation(fields: [vehicleId], references: [id])
+
+  /// What we sent. Snapshotted: the vehicle's device id may change later.
+  deviceId            String @map("device_id") @db.VarChar(32)
+  vehicleRegistration String @map("vehicle_registration") @db.VarChar(24)
+  authorizedLitres    Int    @map("authorized_litres")
+  /// The `ID` query parameter (yyMMddHHmmss), for matching vendor logs.
+  requestRef          String @map("request_ref") @db.VarChar(32)
+
+  /// AUTHORIZED, FAILED, or whatever other status the vendor returned.
+  status           String  @db.VarChar(32)
+  iotTransactionId String? @map("iot_transaction_id") @db.VarChar(64)
+  mpin             String? @db.VarChar(16)
+  errorMessage     String? @map("error_message") @db.VarChar(500)
+  /// The vendor's raw response body, verbatim, for disputes.
+  raw              Json?
+
+  requestedByUserId String? @map("requested_by_user_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([orderId, createdAt])
+  @@map("iot_dispense_authorizations")
 }
 
 // ---------------------------------------------------------------------------

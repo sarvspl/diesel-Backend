@@ -66,6 +66,15 @@ router.get(
   controller.getOrderHistory
 );
 
+/// Live map: tanker position, destination, road route + ETA. Poll every ~20 s
+/// while the order is ASSIGNED / EN_ROUTE / ARRIVED / DISPENSING.
+router.get(
+  '/:id/tracking',
+  requirePermission(PERMISSIONS.ORDER_READ),
+  validate(orderIdSchema),
+  controller.getOrderTracking
+);
+
 router.post(
   '/:id/cancel',
   requirePermission(PERMISSIONS.ORDER_CANCEL),

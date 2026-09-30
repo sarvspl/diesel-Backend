@@ -10,6 +10,7 @@ const VEHICLE_FIELDS = {
   tankCapacity: true,
   compartmentCount: true,
   flowMeterEnabled: true,
+  iotDeviceId: true,
   pesoLicenseNumber: true,
   pesoLicenseExpiry: true,
   calibrationCertNumber: true,

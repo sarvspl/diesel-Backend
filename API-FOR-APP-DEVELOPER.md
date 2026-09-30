@@ -322,7 +322,26 @@ it here.
 - `POST /orders/:id/cancel` — body `{ "reason": "…" }`. Only works from early states
   (see §6); once `EN_ROUTE`/`ARRIVED`/`DISPENSING` it can't be self-cancelled.
 
-### 3.4 Order object (`data.order`)
+### 3.4 Live tracking map — `GET /orders/:id/tracking`
+Poll every ~20 s while the order is `ASSIGNED`, `EN_ROUTE`, `ARRIVED` or `DISPENSING`.
+```
+200 { tracking:{
+  orderId, status,
+  destination:{ latitude, longitude } | null,          // the delivery address pin
+  tanker:{ latitude, longitude, updatedAt, stale } | null,
+  route:{ source:"GOOGLE"|"STRAIGHT_LINE", distanceMeters,
+          durationSeconds|null, polyline|null } | null } }
+```
+- `tanker` = the driver's phone position as last reported by the driver app. `null`
+  until the driver reports one (or outside the statuses above). `stale:true` = older
+  than 5 min: show "last updated …", not "live".
+- `route` only while `ASSIGNED`/`EN_ROUTE` with a fresh position. `source:"GOOGLE"`:
+  road route — draw `polyline` (Google encoded polyline, precision 5) and show
+  `durationSeconds` as ETA. `source:"STRAIGHT_LINE"`: no road data (server key not
+  set) — draw a dashed straight line, show distance only, no ETA.
+- Numbers here are JSON numbers (coordinates), not strings.
+
+### 3.5 Order object (`data.order`)
 ```
 { id, orderNumber, status, paymentStatus, settlementStatus, paymentMode,
   quantity, deliveredQuantity, currency:"INR",
@@ -369,7 +388,58 @@ calibration/PESO, …). If non-empty, show them and disable Go-Online.
   `{ "closingTotalizer":"<string>", "closingFuelQuantity"?, "declaredCash"?, "photoKey"?, "notes"? }`
   → `200 { shift }`.
 
-### 4.3 Orders on the vehicle
+### 4.3 Nearby requests — pick up open orders (first driver wins)
+Customer pay-on-delivery orders are open (`CONFIRMED`) until a driver accepts them.
+Any driver with a tanker assigned can see open orders near their phone and accept one.
+The **first** driver to accept gets it; the order then shows in `GET /driver/orders`
+as `ASSIGNED`, and the delivery sequence (§4.6) continues as normal.
+
+- `GET /driver/requests?latitude=<number>&longitude=<number>` — the phone's current
+  GPS position (both required). Also saves it as the driver's last known location.
+  → `200`
+  ```
+  { requests:[ { id, orderNumber, quantity, product:{name,code}|null, paymentMode,
+                 amountToCollect (CASH_ON_DELIVERY only, else null),
+                 area:{ landmark, city, pincode }, distanceKm, placedAt } ],
+    radiusKm: 25,
+    hasVehicle: boolean }
+  ```
+  Nearest first; only orders within `radiusKm` (straight line). **No customer name,
+  phone or exact address** here — those come with the order after accepting.
+  `hasVehicle:false` → the driver has no tanker assigned: show "Ask the admin to assign
+  a tanker" instead of the list. Refresh the list every ~20 s while it is open (other
+  drivers take orders), and on pull-to-refresh.
+- `POST /driver/requests/:id/accept` — no body. `:id` is the request `id`.
+  → `200 { order }` (driver order shape, §4.5 — now with customer + full address).
+  Errors:
+  - `409 ORDER_ALREADY_TAKEN` — another driver was faster. Remove it and refresh the list.
+  - `409 INSUFFICIENT_FUEL` — this tanker doesn't have enough free fuel for the order.
+  - `409 VEHICLE_NOT_ASSIGNED` — no tanker assigned to this driver.
+
+  **Online only — do not queue `accept` in an offline outbox.** It is a race against
+  other drivers; an accept replayed later is meaningless.
+
+### 4.4 Location and route map
+- `POST /driver/location` — body `{ "latitude": <number>, "longitude": <number> }` →
+  `200`. Report the phone's position (every ~30 s while on a trip). This is what
+  moves the tanker on the customer's map (§3.4).
+- `GET /driver/orders/:id/route?latitude=<number>&longitude=<number>` — route from
+  the phone's position to the order's delivery point. **Also records the position**
+  (no separate `/driver/location` call needed while this screen polls).
+  ```
+  200 { orderId, status, destination:{latitude,longitude}|null,
+        route:{ source:"GOOGLE"|"STRAIGHT_LINE", distanceMeters,
+                durationSeconds|null, polyline|null } }
+  ```
+  Same `route` rules as §3.4. For turn-by-turn driving, hand off to the Google Maps
+  app: `google.navigation:q=<lat>,<lng>&mode=d`.
+
+> **Maps keys.** The apps use the Google Maps SDK for Android (map tiles) with an
+> Android key restricted to the app package + signing SHA-1. Routes/ETA come from
+> **our server** (Google Routes API with a server key) — never call Google's
+> Directions/Routes web APIs from the app, and never put that server key in an APK.
+
+### 4.5 Orders on the vehicle
 - `GET /driver/orders?scope=ACTIVE|COMPLETED&limit=25` →
   `{ orders:[order], vehicleId }`.
   Driver order shape:
@@ -379,10 +449,30 @@ calibration/PESO, …). If non-empty, show them and disable Go-Online.
 - `GET /driver/orders/:id` → `{ order, timeline[], reservation|null,
      readings:[{id,readingType,totalizer,capturedAt,hasPhoto}] }`.
 
-### 4.4 The delivery sequence (call in order)
+### 4.6 The delivery sequence (call in order)
 1. `POST /driver/orders/:id/start-trip` — → `EN_ROUTE`. No body.
 2. `POST /driver/orders/:id/arrive` — body `{ "latitude"?, "longitude"? }` (numbers;
    a missing GPS fix is allowed) → `ARRIVED`.
+   - **2a. Unlock the pump (IoT pump tankers)** — `POST /driver/orders/:id/iot-authorize`,
+     no body. Call it after `arrive` (allowed when the order is `ARRIVED` or
+     `DISPENSING`). The server asks the tanker's IoT pump controller to allow the
+     order's litres and returns the MPIN the driver types on the pump device:
+     ```
+     200 { authorization:{ id, status:"AUTHORIZED", mpin:"123456",
+                           iotTransactionId, authorizedLitres, deviceId, createdAt,
+                           reused: boolean } }
+     ```
+     Show `mpin` large on screen. Calling it again is safe: it returns the **same**
+     MPIN (`reused:true`) and does not unlock the pump a second time — use this to
+     show the MPIN again after the app was closed. Online only (no outbox).
+     Errors:
+     - `409 IOT_DEVICE_NOT_CONFIGURED` — this tanker has no IoT pump. Tell the driver
+       to skip this step.
+     - `400 IOT_DISPENSE_NOT_ENABLED` — pump unlock is switched off on the server.
+       Skip this step.
+     - `503 IOT_AUTHORIZATION_FAILED` — pump service unreachable; let the driver retry.
+     - `409 IOT_AUTHORIZATION_FAILED` — the pump service refused (`details.status`).
+     - `409 INVALID_STATE_TRANSITION` — not arrived yet.
 3. `POST /driver/orders/:id/start-dispensing` — verify the receiver and take the
    **opening** reading → `DISPENSING`. Body:
    ```json
@@ -513,6 +603,11 @@ FYFT tankers are `STOCK`. **`status`:** `IDLE, DISPENSING, FAULT`.
 | `IDEMPOTENCY_KEY_REQUIRED` | placing order without the header | add `Idempotency-Key` |
 | `DUPLICATE_ORDER` | likely double-tap | confirm, resend with `acknowledgeDuplicate:true` |
 | `NO_VEHICLE_AVAILABLE` | no stock/tanker | tell user to try later |
+| `ORDER_ALREADY_TAKEN` (409) | driver accept lost the race | remove from list, refresh nearby requests |
+| `INSUFFICIENT_FUEL` (409) | driver's tanker lacks free fuel for that order | show message |
+| `VEHICLE_NOT_ASSIGNED` (409) | driver accept with no tanker | ask admin to assign a tanker |
+| `IOT_DEVICE_NOT_CONFIGURED` (409) / `IOT_DISPENSE_NOT_ENABLED` (400) | pump unlock not available for this tanker/server | skip the unlock step |
+| `IOT_AUTHORIZATION_FAILED` (503/409) | pump service down or refused | show message, allow retry |
 | `METER_DEVICE_UNAVAILABLE` (503) | IoT device unreachable | show manual reading entry + photo, resubmit |
 | `METER_PHOTO_REQUIRED` | manual reading without photo | attach `photoKey` |
 | `FLOW_METER_NOT_ENABLED` (409) | telemetry asked for a non-IoT vehicle | hide the live-level UI |

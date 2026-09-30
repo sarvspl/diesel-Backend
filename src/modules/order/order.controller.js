@@ -70,6 +70,16 @@ export const getOrder = async (req, res) => {
   return sendSuccess(res, { message: 'Order retrieved', data: { order } });
 };
 
+/** GET /api/v1/orders/:id/tracking */
+export const getOrderTracking = async (req, res) => {
+  const tracking = await queryService.getOwnOrderTracking({
+    orderId: req.validated.params.id,
+    userId: req.auth.userId,
+  });
+
+  return sendSuccess(res, { message: 'Tracking retrieved', data: { tracking } });
+};
+
 /** POST /api/v1/orders/:id/cancel */
 export const cancelOrder = async (req, res) => {
   const order = await cancelService.cancelOwnOrder({

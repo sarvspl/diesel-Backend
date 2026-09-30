@@ -201,6 +201,31 @@ const envSchema = z
     FYFT_SOURCE_CODE: z.string().optional(),
     FYFT_BASE_URL: z.string().url().default('https://www.dezel4u.com/go_fyft'),
 
+    // --- IoT dispense authorization (pump unlock + MPIN) --------------------
+    // `none` (default) = no pump unlock step. `mock` = returns a fixed MPIN
+    // without calling anyone, for testing the app flow. `smarttracker` = the
+    // dezel4u dispense controller (GET v1/dispense/authorize.ashx). See
+    // src/infrastructure/providers/iot-dispense/.
+    IOT_DISPENSE_PROVIDER: z.enum(['none', 'mock', 'smarttracker']).default('none'),
+    IOT_DISPENSE_BASE_URL: z.string().url().default('http://www.smarttracker.live/dezel4u/v1/'),
+    IOT_DISPENSE_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60_000).default(15_000),
+
+    // --- Dispatch: nearby open orders for drivers ---------------------------
+    // Drivers see CONFIRMED orders within this straight-line radius of where
+    // their phone is, and the first to accept gets it.
+    DISPATCH_NEARBY_RADIUS_KM: z.coerce.number().min(1).max(500).default(25),
+
+    // --- Maps (Google Routes API, server-side) ------------------------------
+    // Road route + ETA for the driver and customer map screens. A SERVER key
+    // (restricted to this server's IP), never the apps' Android key. Unset =
+    // no road line; apps draw a straight line and a distance instead.
+    GOOGLE_MAPS_SERVER_KEY: z.string().optional(),
+    // Each route call is billed; a tracking screen polling every 20 s reuses
+    // the answer for this long unless the tanker moved ~100 m.
+    ROUTE_CACHE_SECONDS: z.coerce.number().int().min(10).max(600).default(60),
+    // A driver position older than this is shown as "last seen", not live.
+    DRIVER_LOCATION_STALE_SECONDS: z.coerce.number().int().min(30).max(3600).default(300),
+
     // --- Observability ---------------------------------------------------
     LOG_LEVEL: z
       .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
@@ -287,7 +312,6 @@ const envSchema = z
         message: 'CORS_ORIGIN cannot be "*" in production - list the allowed origins explicitly',
       });
     }
-
   });
 
 const parsed = envSchema.safeParse(process.env);

@@ -3,8 +3,10 @@ import { toQuantityString, toMoneyString } from '../../shared/utils/money.js';
 
 import * as driverOrderRepository from './repositories/driver-order.repository.js';
 import * as deliveryService from './services/delivery.service.js';
+import * as dispatchService from './services/driver-dispatch.service.js';
 import * as selfService from './services/driver-self.service.js';
 import * as shiftService from './services/driver-shift.service.js';
+import * as iotDispenseService from './services/iot-dispense.service.js';
 
 /**
  * Thin HTTP layer. No business logic, no database access.
@@ -179,6 +181,58 @@ export const startDispensing = async (req, res) => {
   return sendSuccess(res, {
     message: 'Dispensing started',
     data: { order: toDriverOrder(order) },
+  });
+};
+
+/** GET /api/v1/driver/requests?latitude=&longitude= */
+export const listNearbyRequests = async (req, res) => {
+  const result = await dispatchService.listNearbyRequests({
+    userId: req.auth.userId,
+    ...req.validated.query,
+  });
+
+  return sendSuccess(res, { message: 'Nearby requests retrieved', data: result });
+};
+
+/** POST /api/v1/driver/location */
+export const updateLocation = async (req, res) => {
+  await dispatchService.updateLocation({ userId: req.auth.userId, ...req.validated.body });
+
+  return sendSuccess(res, { message: 'Location updated', data: {} });
+};
+
+/** GET /api/v1/driver/orders/:id/route?latitude=&longitude= */
+export const getRouteToOrder = async (req, res) => {
+  const result = await dispatchService.routeToOrder({
+    userId: req.auth.userId,
+    orderId: req.validated.params.id,
+    ...req.validated.query,
+  });
+
+  return sendSuccess(res, { message: 'Route retrieved', data: result });
+};
+
+/** POST /api/v1/driver/requests/:id/accept */
+export const acceptRequest = async (req, res) => {
+  const order = await dispatchService.acceptRequest({
+    userId: req.auth.userId,
+    orderId: req.validated.params.id,
+    requestId: req.id,
+  });
+
+  return sendSuccess(res, { message: 'Order accepted', data: { order: toDriverOrder(order) } });
+};
+
+/** POST /api/v1/driver/orders/:id/iot-authorize */
+export const iotAuthorize = async (req, res) => {
+  const authorization = await iotDispenseService.authorizeDispense({
+    userId: req.auth.userId,
+    orderId: req.validated.params.id,
+  });
+
+  return sendSuccess(res, {
+    message: authorization.reused ? 'Pump already unlocked' : 'Pump unlocked',
+    data: { authorization },
   });
 };
 

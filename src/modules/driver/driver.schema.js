@@ -95,6 +95,25 @@ export const orderIdSchema = {
   params: z.object({ id: uuid('Order id') }),
 };
 
+/** POST /driver/location */
+export const locationSchema = {
+  body: z.object({ latitude, longitude }),
+};
+
+/** GET /driver/orders/:id/route — from the phone's position to the site. */
+export const routeSchema = {
+  params: orderIdSchema.params,
+  query: z.object({ latitude, longitude }),
+};
+
+/** Where the driver's phone is now. Required: "nearby" needs a point. */
+export const nearbyRequestsSchema = {
+  query: z.object({
+    latitude,
+    longitude,
+  }),
+};
+
 export const arriveSchema = {
   params: orderIdSchema.params,
   body: z.object({
@@ -153,26 +172,28 @@ export const startDispensingSchema = {
 
 export const completeDeliverySchema = {
   params: orderIdSchema.params,
-  body: z.object({
-    /**
-     * Generated ONCE by the app when the delivery is captured, and reused on
-     * every retry (BR-914). Generating a fresh one per attempt produces exactly
-     * the duplicate this mechanism exists to prevent.
-     */
-    clientDeliveryId: uuid('Client delivery id'),
-    /** Optional for the same reason as the opening reading — the device supplies it. */
-    closingTotalizer: totalizer.optional(),
-    /** Manual fallback for a STOCK-model tanker: litres remaining in tank. */
-    closingStock: totalizer.optional(),
-    /** Enforced in the service, for the same reason as the opening reading. */
-    photoKey: photoKey.optional(),
-    outcome: z.enum(['FULL', 'PARTIAL', 'FAILED']),
-    /** Required for anything other than a clean full delivery. */
-    reasonCode: reasonCode.optional(),
-    temperatureC: z.coerce.number().min(-20).max(80).optional(),
-    notes: z.string().trim().max(500).optional(),
-  }).refine((value) => value.outcome === 'FULL' || Boolean(value.reasonCode), {
-    message: 'A reason code is required for a partial or failed delivery',
-    path: ['reasonCode'],
-  }),
+  body: z
+    .object({
+      /**
+       * Generated ONCE by the app when the delivery is captured, and reused on
+       * every retry (BR-914). Generating a fresh one per attempt produces exactly
+       * the duplicate this mechanism exists to prevent.
+       */
+      clientDeliveryId: uuid('Client delivery id'),
+      /** Optional for the same reason as the opening reading — the device supplies it. */
+      closingTotalizer: totalizer.optional(),
+      /** Manual fallback for a STOCK-model tanker: litres remaining in tank. */
+      closingStock: totalizer.optional(),
+      /** Enforced in the service, for the same reason as the opening reading. */
+      photoKey: photoKey.optional(),
+      outcome: z.enum(['FULL', 'PARTIAL', 'FAILED']),
+      /** Required for anything other than a clean full delivery. */
+      reasonCode: reasonCode.optional(),
+      temperatureC: z.coerce.number().min(-20).max(80).optional(),
+      notes: z.string().trim().max(500).optional(),
+    })
+    .refine((value) => value.outcome === 'FULL' || Boolean(value.reasonCode), {
+      message: 'A reason code is required for a partial or failed delivery',
+      path: ['reasonCode'],
+    }),
 };

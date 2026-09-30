@@ -46,6 +46,7 @@ const toPublicVehicle = (vehicle) => {
     tankCapacity: String(vehicle.tankCapacity),
     compartmentCount: vehicle.compartmentCount,
     flowMeterEnabled: vehicle.flowMeterEnabled ?? false,
+    iotDeviceId: vehicle.iotDeviceId ?? null,
     status: vehicle.status,
     compliance: {
       pesoLicenseNumber: vehicle.pesoLicenseNumber,
@@ -236,6 +237,8 @@ export const updateVehicle = async ({ id, actorUserId, ...input }) => {
     'insuranceExpiry',
     'pucExpiry',
     'fitnessExpiry',
+    'flowMeterEnabled',
+    'iotDeviceId',
     'status',
     'notes',
   ]) {

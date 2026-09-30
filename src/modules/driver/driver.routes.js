@@ -12,7 +12,10 @@ import {
   completeDeliverySchema,
   endShiftSchema,
   listOrdersSchema,
+  locationSchema,
+  nearbyRequestsSchema,
   orderIdSchema,
+  routeSchema,
   startDispensingSchema,
   startShiftSchema,
 } from './driver.schema.js';
@@ -69,6 +72,41 @@ router.post(
   controller.endShift
 );
 
+// --- Location and maps ---------------------------------------------------
+// The app reports the phone's position while a trip screen is open; the
+// customer's tracking map reads it.
+
+router.post(
+  '/location',
+  requirePermission(PERMISSIONS.DELIVERY_EXECUTE),
+  validate(locationSchema),
+  controller.updateLocation
+);
+
+router.get(
+  '/orders/:id/route',
+  requirePermission(PERMISSIONS.ORDER_READ_ASSIGNED),
+  validate(routeSchema),
+  controller.getRouteToOrder
+);
+
+// --- Nearby requests (self-dispatch) -------------------------------------
+// Open orders near the driver's phone; the first driver to accept gets it.
+
+router.get(
+  '/requests',
+  requirePermission(PERMISSIONS.ORDER_READ_ASSIGNED),
+  validate(nearbyRequestsSchema),
+  controller.listNearbyRequests
+);
+
+router.post(
+  '/requests/:id/accept',
+  requirePermission(PERMISSIONS.DELIVERY_EXECUTE),
+  validate(orderIdSchema),
+  controller.acceptRequest
+);
+
 // --- Orders ----------------------------------------------------------------
 
 router.get(
@@ -111,6 +149,17 @@ router.post(
   requirePermission(PERMISSIONS.DELIVERY_SUBMIT),
   validate(startDispensingSchema),
   controller.startDispensing
+);
+
+/**
+ * Unlock the tanker pump via the IoT dispense controller; returns the MPIN.
+ * One authorization per order: a repeat returns the stored MPIN.
+ */
+router.post(
+  '/orders/:id/iot-authorize',
+  requirePermission(PERMISSIONS.DELIVERY_EXECUTE),
+  validate(orderIdSchema),
+  controller.iotAuthorize
 );
 
 /**

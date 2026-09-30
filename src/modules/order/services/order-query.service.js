@@ -2,6 +2,7 @@ import { prisma } from '../../../infrastructure/database/prisma.js';
 import { ERROR_CODES } from '../../../shared/constants/error-codes.js';
 import { NotFoundError } from '../../../shared/errors/index.js';
 import * as reservationService from '../../dispatch/services/reservation.service.js';
+import { trackingForOrder } from '../../dispatch/services/tracking.service.js';
 import * as orderRepository from '../repositories/order.repository.js';
 import { allowedTransitionsFrom } from '../state-machine.js';
 
@@ -45,6 +46,21 @@ export const getOwnOrder = async ({ orderId, userId }) => {
   }
 
   return toPublicOrder(order);
+};
+
+/**
+ * Live map data for the customer: the tanker's last known position, the
+ * delivery point, and the road route/ETA between them while it is on the way.
+ */
+export const getOwnOrderTracking = async ({ orderId, userId }) => {
+  const corporateAccountIds = await corporateScopeFor(userId);
+  const order = await orderRepository.findForUser({ id: orderId, userId, corporateAccountIds });
+
+  if (!order) {
+    throw new NotFoundError('Order not found', { code: ERROR_CODES.ORDER_NOT_FOUND });
+  }
+
+  return trackingForOrder(order);
 };
 
 export const listOwnOrders = async ({ userId, status, limit = 20, cursor }) => {
