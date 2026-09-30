@@ -49,6 +49,8 @@ const toDriverOrder = (order) => ({
 
   address: order.addressSnapshot ?? null,
   deliveryInstructions: order.deliveryInstructions,
+  /** Scheduled delivery time; null = as soon as possible. */
+  scheduledFor: order.scheduledFor ?? null,
 
   placedAt: order.placedAt,
   statusChangedAt: order.statusChangedAt,

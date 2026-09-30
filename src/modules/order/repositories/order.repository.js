@@ -48,6 +48,7 @@ const ORDER_FIELDS = {
   city: true,
   state: true,
   deliveryInstructions: true,
+  scheduledFor: true,
   placedAt: true,
   createdAt: true,
   updatedAt: true,

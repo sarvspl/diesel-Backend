@@ -215,6 +215,12 @@ const envSchema = z
     // their phone is, and the first to accept gets it.
     DISPATCH_NEARBY_RADIUS_KM: z.coerce.number().min(1).max(500).default(25),
 
+    // --- Scheduled delivery -------------------------------------------------
+    // A scheduled order must be at least this far ahead (time for a tanker to
+    // be arranged) and at most this many days ahead.
+    SCHEDULE_MIN_LEAD_MINUTES: z.coerce.number().int().min(0).max(1440).default(120),
+    SCHEDULE_MAX_DAYS: z.coerce.number().int().min(1).max(60).default(7),
+
     // --- Maps (Google Routes API, server-side) ------------------------------
     // Road route + ETA for the driver and customer map screens. A SERVER key
     // (restricted to this server's IP), never the apps' Android key. Unset =

@@ -40,6 +40,7 @@ const base = (order) => ({
   totalAmount: toMoneyString(order.totalAmount),
   finalTotalAmount: order.finalTotalAmount === null ? null : toMoneyString(order.finalTotalAmount),
 
+  scheduledFor: order.scheduledFor ?? null,
   placedAt: order.placedAt,
   statusChangedAt: order.statusChangedAt,
   expiresAt: order.expiresAt,

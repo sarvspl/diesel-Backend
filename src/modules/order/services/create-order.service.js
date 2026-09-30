@@ -130,9 +130,31 @@ export const createOrder = async ({
   quoteId,
   paymentMode,
   deliveryInstructions = null,
+  scheduledFor = null,
   acknowledgeDuplicate = false,
   requestId = null,
 }) => {
+  // --- Scheduled delivery window ---------------------------------------------
+  if (scheduledFor) {
+    const now = Date.now();
+    const earliest = now + env.SCHEDULE_MIN_LEAD_MINUTES * 60_000;
+    const latest = now + env.SCHEDULE_MAX_DAYS * 24 * 60 * 60_000;
+    const at = scheduledFor.getTime();
+
+    if (at < earliest || at > latest) {
+      throw new BadRequestError(
+        `Choose a delivery time between ${env.SCHEDULE_MIN_LEAD_MINUTES} minutes and ${env.SCHEDULE_MAX_DAYS} days from now`,
+        {
+          code: ERROR_CODES.SCHEDULE_OUT_OF_RANGE,
+          details: {
+            earliest: new Date(earliest).toISOString(),
+            latest: new Date(latest).toISOString(),
+          },
+        }
+      );
+    }
+  }
+
   // --- 0. May this caller buy at all? ---------------------------------------
   // Verification exists to stop an unverified company ordering, and until now
   // the LOGIN gate was the only thing enforcing it — safe only while every
@@ -353,6 +375,7 @@ export const createOrder = async ({
       city: quote.city,
       state: quote.state,
       deliveryInstructions: deliveryInstructions ?? address.deliveryInstructions ?? null,
+      scheduledFor,
     });
 
     /**

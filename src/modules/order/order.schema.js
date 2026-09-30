@@ -59,6 +59,16 @@ export const createOrderSchema = {
     deliveryInstructions: z.string().trim().max(500).optional(),
 
     /**
+     * Scheduled delivery time, ISO 8601 with offset. Omit for "as soon as
+     * possible". The allowed window is enforced in the service.
+     */
+    scheduledFor: z
+      .string()
+      .datetime({ offset: true, message: 'scheduledFor must be an ISO date-time' })
+      .transform((v) => new Date(v))
+      .optional(),
+
+    /**
      * The customer's answer to a soft duplicate warning (BR-804).
      *
      * Default false so the warning fires by default; a client that has shown

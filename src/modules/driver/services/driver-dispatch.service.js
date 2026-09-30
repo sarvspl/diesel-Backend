@@ -108,6 +108,7 @@ const toRequest = (order, km) => ({
     pincode: order.addressSnapshot?.pincode ?? null,
   },
   distanceKm: Math.round(km * 10) / 10,
+  scheduledFor: order.scheduledFor ?? null,
   placedAt: order.placedAt,
 });
 
@@ -140,6 +141,7 @@ export const listNearbyRequests = async ({ userId, latitude, longitude }) => {
       city: true,
       addressSnapshot: true,
       productSnapshot: true,
+      scheduledFor: true,
       placedAt: true,
     },
     orderBy: { placedAt: 'asc' },

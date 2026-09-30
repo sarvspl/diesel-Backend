@@ -322,6 +322,14 @@ it here.
 - `POST /orders/:id/cancel` — body `{ "reason": "…" }`. Only works from early states
   (see §6); once `EN_ROUTE`/`ARRIVED`/`DISPENSING` it can't be self-cancelled.
 
+### 3.3b Scheduled delivery
+`POST /orders` accepts an optional `"scheduledFor": "<ISO 8601 with offset, e.g. 2026-10-02T10:00:00+05:30>"`.
+Omit it for "as soon as possible". It must be at least 2 hours and at most 7 days
+ahead (server settings `SCHEDULE_MIN_LEAD_MINUTES`, `SCHEDULE_MAX_DAYS`), else
+`400 SCHEDULE_OUT_OF_RANGE` with `details.earliest` / `details.latest`. Every order
+object (customer, driver, admin, nearby requests) carries `scheduledFor` (ISO or `null`).
+Drivers see it on nearby requests; it does not hold the order back from dispatch.
+
 ### 3.3a Today's price at an address — `GET /quotes/rate?addressId=&productId=`
 Display only (e.g. "Diesel ₹94.20/L" on Home, rupee-amount presets). Nothing is held.
 `200 { rate:{ productId, pricePerUnit:"94.20", city, pincode } }`;

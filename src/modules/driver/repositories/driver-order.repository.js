@@ -39,6 +39,7 @@ const ORDER_FIELDS = {
   finalTotalAmount: true,
   city: true,
   deliveryInstructions: true,
+  scheduledFor: true,
   customerSnapshot: true,
   addressSnapshot: true,
   productSnapshot: true,

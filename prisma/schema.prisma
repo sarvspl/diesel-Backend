@@ -1723,6 +1723,11 @@ model Order {
   /// Free-text note from the customer: "Gate 2, security pass needed".
   deliveryInstructions String? @map("delivery_instructions") @db.VarChar(500)
 
+  /// Scheduled delivery: the time the customer wants the fuel. NULL = as soon
+  /// as possible. Validated at creation (SCHEDULE_MIN_LEAD_MINUTES ahead, at
+  /// most SCHEDULE_MAX_DAYS). Informs drivers; it does not delay dispatch.
+  scheduledFor DateTime? @map("scheduled_for") @db.Timestamptz(6)
+
   placedAt  DateTime  @default(now()) @map("placed_at") @db.Timestamptz(6)
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
