@@ -322,6 +322,12 @@ it here.
 - `POST /orders/:id/cancel` — body `{ "reason": "…" }`. Only works from early states
   (see §6); once `EN_ROUTE`/`ARRIVED`/`DISPENSING` it can't be self-cancelled.
 
+### 3.3a Today's price at an address — `GET /quotes/rate?addressId=&productId=`
+Display only (e.g. "Diesel ₹94.20/L" on Home, rupee-amount presets). Nothing is held.
+`200 { rate:{ productId, pricePerUnit:"94.20", city, pincode } }`;
+`409 NO_ACTIVE_PRICE` when no price is published for that pincode. Always place the
+order from a real quote (§3.3) — never from this figure.
+
 ### 3.4 Live tracking map — `GET /orders/:id/tracking`
 Poll every ~20 s while the order is `ASSIGNED`, `EN_ROUTE`, `ARRIVED` or `DISPENSING`.
 ```
@@ -376,6 +382,10 @@ Everything the app needs on open:
 `blockers` is why the driver can't work yet (expired licence, no vehicle, expired
 calibration/PESO, …). If non-empty, show them and disable Go-Online.
 
+### 4.1a Edit own name — `PATCH /driver/me`
+Body `{ "fullName": "…" }` (2–120 chars) → `200` same shape as `GET /driver/me`.
+Phone/email are sign-in identities and are changed by the admin, not here.
+
 ### 4.2 Availability & shifts
 - `PATCH /driver/availability` — body `{ "availability": "ONLINE" | "BREAK" | "OFFLINE" }`
   (`ON_TRIP` is system-set, not settable). Going ONLINE with no open shift →
@@ -418,6 +428,11 @@ as `ASSIGNED`, and the delivery sequence (§4.6) continues as normal.
 
   **Online only — do not queue `accept` in an offline outbox.** It is a race against
   other drivers; an accept replayed later is meaningless.
+
+### 4.3a Hand an accepted order back — `POST /driver/orders/:id/reject`
+Body `{ "reason"?: "…" }`. Only while the order is `ASSIGNED` (trip not started) →
+`200`; the order returns to nearby drivers. After start-trip → `409
+INVALID_STATE_TRANSITION` ("call dispatch"). Online only (no outbox).
 
 ### 4.4 Location and route map
 - `POST /driver/location` — body `{ "latitude": <number>, "longitude": <number> }` →

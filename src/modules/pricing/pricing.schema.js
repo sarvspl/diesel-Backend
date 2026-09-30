@@ -302,6 +302,14 @@ export const createQuoteSchema = {
   }),
 };
 
+/** GET /quotes/rate — display-only per-litre rate for an address. */
+export const currentRateSchema = {
+  query: z.object({
+    addressId: uuid('Address id'),
+    productId: uuid('Product id'),
+  }),
+};
+
 export const quoteIdSchema = {
   params: z.object({ id: uuid('Quote id') }),
 };

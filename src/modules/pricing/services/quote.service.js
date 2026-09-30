@@ -260,3 +260,37 @@ export const expireLapsedQuotes = async () => {
 };
 
 export { toPublicQuote };
+
+/**
+ * Today's per-litre rate for an address, WITHOUT creating a quote.
+ *
+ * For display only (the app's home screen "Diesel ₹xx/L" and the rupee-amount
+ * presets). Nothing is held or promised: the order is always priced from a
+ * real quote. Same address scoping and price lookup as createQuote, so the
+ * figure shown is the figure the quote will use.
+ */
+export const getCurrentRate = async ({ userId, addressId, productId }) => {
+  const address = await addressRepository.findForUser({ id: addressId, userId });
+
+  if (!address) throw new NotFoundError('Address not found');
+
+  const price = await pricingRepository.findActivePrice({
+    productId,
+    city: address.city,
+    pincode: address.pincode,
+  });
+
+  if (!price) {
+    throw new ConflictError(`No price is configured at PIN ${address.pincode} (${address.city})`, {
+      code: ERROR_CODES.NO_ACTIVE_PRICE,
+      details: { city: address.city, pincode: address.pincode },
+    });
+  }
+
+  return {
+    productId,
+    pricePerUnit: toMoneyString(price.pricePerUnit),
+    city: address.city,
+    pincode: address.pincode,
+  };
+};

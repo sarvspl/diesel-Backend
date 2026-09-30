@@ -6,7 +6,7 @@ import { requirePermission, requirePrincipal } from '../../shared/middleware/aut
 import { validate } from '../../shared/middleware/validate.js';
 
 import * as controller from './pricing.controller.js';
-import { createQuoteSchema, quoteIdSchema } from './pricing.schema.js';
+import { createQuoteSchema, currentRateSchema, quoteIdSchema } from './pricing.schema.js';
 
 /**
  * Customer-facing quotes.
@@ -28,6 +28,14 @@ router.post(
   requirePermission(PERMISSIONS.QUOTE_CREATE),
   validate(createQuoteSchema),
   controller.createQuote
+);
+
+// Literal path before '/:id'.
+router.get(
+  '/rate',
+  requirePermission(PERMISSIONS.QUOTE_CREATE),
+  validate(currentRateSchema),
+  controller.getCurrentRate
 );
 
 router.get(

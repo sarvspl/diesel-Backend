@@ -158,6 +158,16 @@ export const createQuote = async (req, res) => {
   return sendCreated(res, { message: 'Quote generated', data: { quote } });
 };
 
+/** GET /api/v1/quotes/rate?addressId=&productId= */
+export const getCurrentRate = async (req, res) => {
+  const rate = await quoteService.getCurrentRate({
+    userId: req.auth.userId,
+    ...req.validated.query,
+  });
+
+  return sendSuccess(res, { message: 'Rate retrieved', data: { rate } });
+};
+
 /** GET /api/v1/quotes/:id */
 export const getQuote = async (req, res) => {
   const quote = await quoteService.getQuote({
