@@ -33,6 +33,7 @@ export const createDezel4uProvider = ({
   sourceCode,
   baseUrl = 'https://www.dezel4u.com/go_fyft',
   http = fetch,
+  timeoutMs = 8000,
   now = () => new Date(),
   // Refresh this many ms before the JWT actually expires, to avoid a race.
   refreshSkewMs = 60_000,
@@ -62,11 +63,17 @@ export const createDezel4uProvider = ({
   };
 
   const fetchToken = async () => {
-    const res = await http(`${baseUrl}/fetch_jwt.php`, {
-      method: 'POST',
-      headers: { 'Content-type': 'application/x-www-form-urlencoded' },
-      body: form({ source_code: sourceCode }),
-    });
+    let res;
+    try {
+      res = await http(`${baseUrl}/fetch_jwt.php`, {
+        method: 'POST',
+        headers: { 'Content-type': 'application/x-www-form-urlencoded' },
+        body: form({ source_code: sourceCode }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (err) {
+      throw new FlowMeterError(FLOW_METER_ERROR.DEVICE_OFFLINE, `FYFT unreachable (${err.name})`);
+    }
 
     const body = await res.json().catch(() => null);
 
@@ -128,15 +135,22 @@ export const createDezel4uProvider = ({
   });
 
   const readOnce = async ({ registration, token }) => {
-    const res = await http(`${baseUrl}/check_bowstock.php`, {
-      method: 'POST',
-      headers: {
-        'Content-type': 'application/x-www-form-urlencoded',
-        Authentication: sourceCode,
-        'X-Verify': token,
-      },
-      body: form({ vehicle: registration }),
-    });
+    let res;
+    try {
+      res = await http(`${baseUrl}/check_bowstock.php`, {
+        method: 'POST',
+        headers: {
+          'Content-type': 'application/x-www-form-urlencoded',
+          Authentication: sourceCode,
+          'X-Verify': token,
+        },
+        body: form({ vehicle: registration }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (err) {
+      // Network failure or timeout: the vendor is unreachable, not a bug here.
+      throw new FlowMeterError(FLOW_METER_ERROR.DEVICE_OFFLINE, `FYFT unreachable (${err.name})`);
+    }
 
     if (!res?.ok) {
       throw new FlowMeterError(FLOW_METER_ERROR.DEVICE_OFFLINE, `FYFT HTTP ${res?.status}`, {
@@ -144,7 +158,15 @@ export const createDezel4uProvider = ({
       });
     }
 
-    return res.json();
+    const text = await res.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      // An HTML/PHP error page instead of JSON.
+      throw new FlowMeterError(FLOW_METER_ERROR.PROVIDER_ERROR, 'FYFT returned a non-JSON reply', {
+        body: text.slice(0, 300),
+      });
+    }
   };
 
   return {
@@ -190,7 +212,10 @@ export const createDezel4uProvider = ({
      */
     async pushRate({ rate, fuelType = 'HSD', skuId = 2 }) {
       if (rate == null || !Number.isFinite(Number(rate)) || Number(rate) <= 0) {
-        throw new FlowMeterError(FLOW_METER_ERROR.PROVIDER_ERROR, 'A positive numeric rate is required');
+        throw new FlowMeterError(
+          FLOW_METER_ERROR.PROVIDER_ERROR,
+          'A positive numeric rate is required'
+        );
       }
 
       const send = async (token) => {

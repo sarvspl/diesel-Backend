@@ -135,7 +135,15 @@ export const getVehicleTelemetry = async (id) => {
     });
   }
 
-  const provider = getFlowMeterProvider();
+  let provider;
+  try {
+    provider = getFlowMeterProvider();
+  } catch (error) {
+    // e.g. FLOW_METER_PROVIDER=dezel4u but FYFT_SOURCE_CODE missing.
+    throw new ServiceUnavailableError(`Device integration is misconfigured: ${error.message}`, {
+      code: ERROR_CODES.METER_DEVICE_UNAVAILABLE,
+    });
+  }
 
   if (!provider) {
     throw new ServiceUnavailableError('Device integration is not configured on the server', {
@@ -153,9 +161,10 @@ export const getVehicleTelemetry = async (id) => {
           code: ERROR_CODES.METER_DEVICE_UNAVAILABLE,
         });
       }
-      throw new ServiceUnavailableError(`The device is unavailable right now (${error.code})`, {
-        code: ERROR_CODES.METER_DEVICE_UNAVAILABLE,
-      });
+      throw new ServiceUnavailableError(
+        `The device is unavailable right now (${error.code}: ${error.message})`,
+        { code: ERROR_CODES.METER_DEVICE_UNAVAILABLE }
+      );
     }
     throw error;
   }
