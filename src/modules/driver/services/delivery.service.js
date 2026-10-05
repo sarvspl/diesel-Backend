@@ -179,10 +179,15 @@ export const captureReading = async ({ vehicle, which, manualTotalizer, manualSt
         note: `${provider.name}:${isStock ? `stock ${r.stockLitres}L` : `meter ${r.totalizerGross}`}`,
       };
     } catch (err) {
-      // Non-recoverable (bad config, unknown vehicle) is a real error; a
-      // recoverable one (offline/fault) drops through to the manual fallback.
-      if (!(err instanceof FlowMeterError) || !err.isRecoverable) throw err;
-      log.warn({ code: err.code, which }, 'flow-meter unavailable — trying manual fallback');
+      // ANY device-side failure (offline, fault, unknown vehicle, auth/config)
+      // drops through to the manual reading + photo: the device is a
+      // convenience, never a hard dependency, and the fuel still has to move.
+      // Only a genuine bug (non-FlowMeterError) aborts.
+      if (!(err instanceof FlowMeterError)) throw err;
+      log.warn(
+        { code: err.code, msg: err.message, which },
+        'flow-meter unavailable — trying manual fallback'
+      );
     }
   }
 
