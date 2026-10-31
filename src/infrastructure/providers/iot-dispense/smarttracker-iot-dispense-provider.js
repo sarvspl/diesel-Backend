@@ -5,32 +5,44 @@ import { IotDispenseError } from './iot-dispense-error.js';
 const log = createLogger({ module: 'iot-dispense.smarttracker' });
 
 /**
- * smarttracker / dezel4u dispense controller (vendor doc "dezel4u-001").
+ * smarttracker / dezel4u dispense controller (vendor doc "dezel4u-001", rev 2).
  *
  *   GET {base}dispense/authorize.ashx
- *       ?deviceId=00001&vehicleRegistration=WB02AE4377
- *       &authorizedQuantityLitres=0025&ID=260927113401
- *   → { "iotTransactionId": "...", "mpin": "123456", "status": "AUTHORIZED" }
+ *       ?deviceId=0001&vehicleRegistration=WB02AE4377
+ *       &authorizedQuantityLitres=0025.00&mpin=2341&ID=260927113401
+ *   → { "iotTransactionId": "...", "status": "AUTHORIZED",
+ *       "lastAcceptedQty": "0000.00", "lastAcceptedTime": "000000000000",
+ *       "deviceID": "0001", "vehicleRegNo": "WB02AE4377" }
+ *
+ * WE generate the MPIN (4 digits) and send it; the device accepts that MPIN.
+ * The reply no longer carries one. deviceId is strictly 4 numeric characters.
  *
  * KNOWN GAPS in the vendor API, raised with them: plain HTTP, no credential,
- * a state-changing GET, no documented error shape. Nothing here can fix those;
- * the adapter only makes sure a non-JSON or non-2xx answer is never read as an
- * authorization.
+ * a state-changing GET carrying the MPIN in the URL. Nothing here can fix
+ * those; the adapter only makes sure a non-JSON or non-2xx answer is never
+ * read as an authorization.
  *
  * @returns {import('./index.js').IotDispenseProvider}
  */
+
+/** 25 → "0025.00"; 125.5 → "0125.50" (their example format). */
+export const formatLitres = (litres) => {
+  const [whole, frac] = Number(litres).toFixed(2).split('.');
+  return `${whole.padStart(4, '0')}.${frac}`;
+};
+
 export const createSmarttrackerProvider = ({ baseUrl, timeoutMs = 15_000, http = fetch }) => {
   const base = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
 
   return {
     name: 'smarttracker',
 
-    authorize: async ({ deviceId, vehicleRegistration, litres, requestRef }) => {
+    authorize: async ({ deviceId, vehicleRegistration, litres, mpin, requestRef }) => {
       const url = new URL('dispense/authorize.ashx', base);
       url.searchParams.set('deviceId', deviceId);
       url.searchParams.set('vehicleRegistration', vehicleRegistration);
-      // Their example is zero-padded to 4 digits ("0025").
-      url.searchParams.set('authorizedQuantityLitres', String(litres).padStart(4, '0'));
+      url.searchParams.set('authorizedQuantityLitres', formatLitres(litres));
+      url.searchParams.set('mpin', mpin);
       url.searchParams.set('ID', requestRef);
 
       let res;
@@ -68,10 +80,24 @@ export const createSmarttrackerProvider = ({ baseUrl, timeoutMs = 15_000, http =
         });
       }
 
+      // They echo the device and vehicle. A mismatch would mean the unlock went
+      // to a different pump than the one this order is on — log it loudly.
+      if (
+        (body.deviceID && String(body.deviceID) !== deviceId) ||
+        (body.vehicleRegNo && String(body.vehicleRegNo) !== vehicleRegistration)
+      ) {
+        log.error(
+          {
+            sent: { deviceId, vehicleRegistration },
+            got: { deviceID: body.deviceID, vehicleRegNo: body.vehicleRegNo },
+          },
+          'IoT authorize reply is for a different device/vehicle'
+        );
+      }
+
       return {
         status: String(body.status ?? 'UNKNOWN').toUpperCase(),
         iotTransactionId: body.iotTransactionId ? String(body.iotTransactionId) : null,
-        mpin: body.mpin ? String(body.mpin) : null,
         raw: body,
       };
     },

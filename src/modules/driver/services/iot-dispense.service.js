@@ -1,3 +1,5 @@
+import { randomInt } from 'node:crypto';
+
 import { prisma } from '../../../infrastructure/database/prisma.js';
 import {
   getIotDispenseProvider,
@@ -102,6 +104,11 @@ export const authorizeDispense = async ({ userId, orderId }) => {
   const litres = Math.ceil(Number(order.quantity));
   const requestRef = requestRefFor();
 
+  // WE issue the MPIN (vendor rev 2): 4 random digits, sent with the request;
+  // the pump accepts it and the driver keys it in. Crypto-random, not
+  // Math.random, so it cannot be predicted from earlier ones.
+  const mpin = String(randomInt(0, 10_000)).padStart(4, '0');
+
   const base = {
     orderId,
     vehicleId: vehicle.id,
@@ -119,6 +126,7 @@ export const authorizeDispense = async ({ userId, orderId }) => {
       deviceId: vehicle.iotDeviceId,
       vehicleRegistration: vehicle.registrationNumber,
       litres,
+      mpin,
       requestRef,
     });
   } catch (err) {
@@ -143,7 +151,8 @@ export const authorizeDispense = async ({ userId, orderId }) => {
       ...base,
       status: result.status.slice(0, 32),
       iotTransactionId: result.iotTransactionId,
-      mpin: result.mpin,
+      // Only an accepted MPIN is kept; a refused attempt's MPIN is useless.
+      mpin: result.status === 'AUTHORIZED' ? mpin : null,
       raw: result.raw,
     },
   });
@@ -158,7 +167,7 @@ export const authorizeDispense = async ({ userId, orderId }) => {
     'IoT dispense authorize'
   );
 
-  if (result.status !== 'AUTHORIZED' || !result.mpin) {
+  if (result.status !== 'AUTHORIZED') {
     throw new ConflictError(`The pump was not unlocked (status: ${result.status})`, {
       code: ERROR_CODES.IOT_AUTHORIZATION_FAILED,
       details: { status: result.status },

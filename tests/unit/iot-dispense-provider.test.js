@@ -7,7 +7,10 @@ import {
   IotDispenseError,
   requestRefFor,
 } from '../../src/infrastructure/providers/iot-dispense/index.js';
-import { createSmarttrackerProvider } from '../../src/infrastructure/providers/iot-dispense/smarttracker-iot-dispense-provider.js';
+import {
+  createSmarttrackerProvider,
+  formatLitres,
+} from '../../src/infrastructure/providers/iot-dispense/smarttracker-iot-dispense-provider.js';
 
 /**
  * The smarttracker adapter unlocks a real pump, so the one property that
@@ -23,20 +26,21 @@ const fakeHttp =
   };
 
 const input = {
-  deviceId: '00001',
+  deviceId: '0001',
   vehicleRegistration: 'WB02AE4377',
   litres: 25,
+  mpin: '2341',
   requestRef: '260927113401',
 };
 
-describe('smarttracker IoT dispense adapter', () => {
-  it('builds the vendor URL with a zero-padded quantity and the cache-buster', async () => {
+describe('smarttracker IoT dispense adapter (doc rev 2)', () => {
+  it('sends our MPIN and a 0000.00 quantity, exactly as the vendor example', async () => {
     const seen = {};
     const provider = createSmarttrackerProvider({
       baseUrl: 'http://www.smarttracker.live/dezel4u/v1/',
       http: fakeHttp(
         200,
-        '{"iotTransactionId":"00001260928225749","mpin":"123456","status":"AUTHORIZED"}',
+        '{"iotTransactionId":"0001261023145325","status":"AUTHORIZED","lastAcceptedQty":"0000.00","lastAcceptedTime":"000000000000","deviceID":"0001","vehicleRegNo":"WB02AE4377"}',
         seen
       ),
     });
@@ -45,11 +49,17 @@ describe('smarttracker IoT dispense adapter', () => {
 
     assert.equal(
       String(seen.url),
-      'http://www.smarttracker.live/dezel4u/v1/dispense/authorize.ashx?deviceId=00001&vehicleRegistration=WB02AE4377&authorizedQuantityLitres=0025&ID=260927113401'
+      'http://www.smarttracker.live/dezel4u/v1/dispense/authorize.ashx?deviceId=0001&vehicleRegistration=WB02AE4377&authorizedQuantityLitres=0025.00&mpin=2341&ID=260927113401'
     );
     assert.equal(result.status, 'AUTHORIZED');
-    assert.equal(result.mpin, '123456');
-    assert.equal(result.iotTransactionId, '00001260928225749');
+    assert.equal(result.iotTransactionId, '0001261023145325');
+    assert.equal(result.raw.lastAcceptedQty, '0000.00');
+  });
+
+  it('formats litres with 4 whole digits and 2 decimals', () => {
+    assert.equal(formatLitres(25), '0025.00');
+    assert.equal(formatLitres(125.5), '0125.50');
+    assert.equal(formatLitres(2000), '2000.00');
   });
 
   it('passes a non-AUTHORIZED status through for the service to refuse', async () => {
@@ -60,7 +70,6 @@ describe('smarttracker IoT dispense adapter', () => {
 
     const result = await provider.authorize(input);
     assert.equal(result.status, 'DENIED');
-    assert.equal(result.mpin, null);
   });
 
   it('throws on a non-JSON reply (e.g. an HTML error page)', async () => {

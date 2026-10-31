@@ -1,20 +1,27 @@
 /**
- * Development IoT dispense provider. Calls nobody; always authorizes with the
- * same MPIN the vendor currently hard-codes, so the driver-app flow can be
- * tested end to end without unlocking a real pump.
+ * Development IoT dispense provider. Calls nobody; always authorizes, replying
+ * in the vendor's shape (no MPIN — we generate it), so the driver-app flow can
+ * be tested end to end without unlocking a real pump.
  *
  * @type {import('./index.js').IotDispenseProvider}
  */
 export const mockIotDispenseProvider = {
   name: 'mock',
 
-  authorize: async ({ deviceId, requestRef }) => {
+  authorize: async ({ deviceId, vehicleRegistration, requestRef }) => {
     const body = {
       iotTransactionId: `${deviceId}${requestRef}`,
-      mpin: '123456',
       status: 'AUTHORIZED',
+      lastAcceptedQty: '0000.00',
+      lastAcceptedTime: '000000000000',
+      deviceID: deviceId,
+      vehicleRegNo: vehicleRegistration,
     };
 
-    return { ...body, raw: { ...body, mock: true } };
+    return {
+      status: body.status,
+      iotTransactionId: body.iotTransactionId,
+      raw: { ...body, mock: true },
+    };
   },
 };

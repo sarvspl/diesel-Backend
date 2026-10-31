@@ -201,8 +201,8 @@ export const createVehicleSchema = {
     iotDeviceId: z
       .string()
       .trim()
-      .max(32)
-      .regex(/^[A-Za-z0-9_-]*$/, 'Device id may contain only letters, digits, - and _')
+      .max(4)
+      .regex(/^(\d{4})?$/, 'Device id must be exactly 4 digits, e.g. 0001')
       .transform((v) => (v === '' ? null : v))
       .optional(),
     ...complianceFields,
@@ -232,8 +232,8 @@ export const updateVehicleSchema = {
       iotDeviceId: z
         .string()
         .trim()
-        .max(32)
-        .regex(/^[A-Za-z0-9_-]*$/, 'Device id may contain only letters, digits, - and _')
+        .max(4)
+        .regex(/^(\d{4})?$/, 'Device id must be exactly 4 digits, e.g. 0001')
         .transform((v) => (v === '' ? null : v))
         .nullable()
         .optional(),
