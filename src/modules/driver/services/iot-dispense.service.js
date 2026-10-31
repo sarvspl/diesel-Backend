@@ -36,11 +36,16 @@ const log = createLogger({ module: 'driver.iot-dispense' });
 
 const ALLOWED_STATUSES = [ORDER_STATUS.ARRIVED, ORDER_STATUS.DISPENSING];
 
+/**
+ * The DRIVER's view of an unlock. Deliberately WITHOUT the MPIN: the customer
+ * sees it in their app and reads it out, so the pump only opens with the
+ * customer present (GET /orders/:id/pump-pin). No customer, no fuel.
+ */
 const toAuthorization = (row, reused) => ({
   id: row.id,
   status: row.status,
   iotTransactionId: row.iotTransactionId,
-  mpin: row.mpin,
+  mpin: null,
   authorizedLitres: row.authorizedLitres,
   deviceId: row.deviceId,
   createdAt: row.createdAt,

@@ -70,6 +70,16 @@ export const getOrder = async (req, res) => {
   return sendSuccess(res, { message: 'Order retrieved', data: { order } });
 };
 
+/** GET /api/v1/orders/:id/pump-pin */
+export const getOrderPumpPin = async (req, res) => {
+  const pin = await queryService.getOwnOrderPumpPin({
+    orderId: req.validated.params.id,
+    userId: req.auth.userId,
+  });
+
+  return sendSuccess(res, { message: 'Pump PIN retrieved', data: pin });
+};
+
 /** GET /api/v1/orders/:id/tracking */
 export const getOrderTracking = async (req, res) => {
   const tracking = await queryService.getOwnOrderTracking({

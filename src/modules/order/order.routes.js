@@ -75,6 +75,15 @@ router.get(
   controller.getOrderTracking
 );
 
+/// Pump MPIN the customer reads out to the driver (ARRIVED/DISPENSING, after
+/// the driver unlocks the pump). { mpin: null } until then.
+router.get(
+  '/:id/pump-pin',
+  requirePermission(PERMISSIONS.ORDER_READ),
+  validate(orderIdSchema),
+  controller.getOrderPumpPin
+);
+
 router.post(
   '/:id/cancel',
   requirePermission(PERMISSIONS.ORDER_CANCEL),

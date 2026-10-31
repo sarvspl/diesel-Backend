@@ -63,6 +63,35 @@ export const getOwnOrderTracking = async ({ orderId, userId }) => {
   return trackingForOrder(order);
 };
 
+/**
+ * The pump MPIN for the customer's own order, which they read out to the
+ * driver. Only while the tanker is at the site (ARRIVED / DISPENSING) and
+ * after the driver has unlocked the pump; `null` otherwise. The driver app
+ * never receives it.
+ */
+export const getOwnOrderPumpPin = async ({ orderId, userId }) => {
+  const corporateAccountIds = await corporateScopeFor(userId);
+  const order = await orderRepository.findForUser({ id: orderId, userId, corporateAccountIds });
+
+  if (!order) {
+    throw new NotFoundError('Order not found', { code: ERROR_CODES.ORDER_NOT_FOUND });
+  }
+
+  if (!['ARRIVED', 'DISPENSING'].includes(order.status)) return { mpin: null };
+
+  const auth = await prisma.iotDispenseAuthorization.findFirst({
+    where: { orderId, status: 'AUTHORIZED' },
+    orderBy: { createdAt: 'desc' },
+    select: { mpin: true, authorizedLitres: true, createdAt: true },
+  });
+
+  return {
+    mpin: auth?.mpin ?? null,
+    authorizedLitres: auth?.authorizedLitres ?? null,
+    unlockedAt: auth?.createdAt ?? null,
+  };
+};
+
 export const listOwnOrders = async ({ userId, status, limit = 20, cursor }) => {
   const corporateAccountIds = await corporateScopeFor(userId);
 
