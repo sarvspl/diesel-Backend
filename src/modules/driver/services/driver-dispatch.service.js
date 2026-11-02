@@ -67,15 +67,15 @@ export const searchDeadlineOf = (order) =>
     : new Date(new Date(order.statusChangedAt).getTime() + env.DISPATCH_SEARCH_MINUTES * 60_000);
 
 /**
- * Drivers who passed on an order, so it leaves only their list.
- *
- * In memory on purpose: an open order lives minutes, and losing the list on a
- * restart only means a driver sees a request they skipped once more. Backend
- * runs as a single pm2 process.
+ * Record that a driver passed on an order, so it leaves only their list.
+ * Stored in the database: every backend process must agree on it.
  */
-const declined = new Map(); // orderId -> Set<driverProfileId>
-
-const forgetDeclines = (orderId) => declined.delete(orderId);
+const recordDecline = (orderId, driverProfileId) =>
+  prisma.dispatchDecline.upsert({
+    where: { orderId_driverProfileId: { orderId, driverProfileId } },
+    create: { orderId, driverProfileId },
+    update: {},
+  });
 
 const distanceKm = (lat1, lng1, lat2, lng2) => {
   const R = 6371;
@@ -175,11 +175,19 @@ export const listNearbyRequests = async ({ userId, latitude, longitude }) => {
 
   const requests = [];
   const now = Date.now();
+  const declinedIds = new Set(
+    (
+      await prisma.dispatchDecline.findMany({
+        where: { driverProfileId: driver.id, orderId: { in: candidates.map((o) => o.id) } },
+        select: { orderId: true },
+      })
+    ).map((d) => d.orderId)
+  );
 
   for (const order of candidates) {
     // Past its search window (the sweep will cancel it) or skipped by this driver.
     if (searchDeadlineOf(order).getTime() <= now) continue;
-    if (declined.get(order.id)?.has(driver.id)) continue;
+    if (declinedIds.has(order.id)) continue;
 
     const lat = Number(order.addressSnapshot?.latitude);
     const lng = Number(order.addressSnapshot?.longitude);
@@ -342,7 +350,6 @@ export const acceptRequest = async ({ userId, orderId, requestId }) => {
     requestId,
   });
 
-  forgetDeclines(orderId);
   log.info({ orderId, vehicleId, driverUserId: userId }, 'order accepted by driver');
 
   return driverOrderRepository
@@ -426,8 +433,7 @@ export const rejectOrder = async ({ userId, orderId, reason, requestId }) => {
   });
 
   // The driver who handed it back should not be offered it again.
-  if (!declined.has(orderId)) declined.set(orderId, new Set());
-  declined.get(orderId).add(driver.id);
+  await recordDecline(orderId, driver.id);
 
   log.info({ orderId, driverUserId: userId }, 'order handed back by driver');
 };
@@ -439,8 +445,12 @@ export const rejectOrder = async ({ userId, orderId, reason, requestId }) => {
 export const declineRequest = async ({ userId, orderId }) => {
   const driver = await resolveDriverProfile(userId);
 
-  if (!declined.has(orderId)) declined.set(orderId, new Set());
-  declined.get(orderId).add(driver.id);
+  const exists = await prisma.order.findUnique({ where: { id: orderId }, select: { id: true } });
+  if (!exists) {
+    throw new NotFoundError('Order not found', { code: ERROR_CODES.ORDER_NOT_FOUND });
+  }
+
+  await recordDecline(orderId, driver.id);
 
   log.info({ orderId, driverUserId: userId }, 'nearby request declined by driver');
 };
@@ -470,7 +480,6 @@ export const expireUnacceptedOrders = async () => {
         reason: NO_DRIVER_REASON,
         expectedStatus: order.status,
       });
-      forgetDeclines(order.id);
       cancelled += 1;
     } catch (error) {
       // Accepted in the same instant, most likely. Next sweep re-checks.

@@ -451,13 +451,13 @@ model User {
   sessions UserSession[]
   roles    UserRole[]
 
-  customerProfile    CustomerProfile?
-  addresses          Address[]
+  customerProfile      CustomerProfile?
+  addresses            Address[]
   corporateMemberships CorporateMember[] @relation("CorporateMembership")
-  driverProfile      DriverProfile?
-  driverShifts       DriverShift[]      @relation("ShiftDriver")
-  quotes             Quote[]
-  orders             Order[]
+  driverProfile        DriverProfile?
+  driverShifts         DriverShift[]     @relation("ShiftDriver")
+  quotes               Quote[]
+  orders               Order[]
 
   /// Scoped per principal, not global: the same phone may exist once as a
   /// customer and once as a driver (BR-104). Erasure under BR-105 tokenises
@@ -499,10 +499,10 @@ model UserSession {
   rotationCounter Int @default(0) @map("rotation_counter")
 
   /// Client-supplied, for "your devices". Not trusted for any security decision.
-  deviceId   String?         @map("device_id") @db.VarChar(128)
-  deviceName String?         @map("device_name") @db.VarChar(128)
-  platform   DevicePlatform  @default(UNKNOWN)
-  appVersion String?         @map("app_version") @db.VarChar(32)
+  deviceId   String?        @map("device_id") @db.VarChar(128)
+  deviceName String?        @map("device_name") @db.VarChar(128)
+  platform   DevicePlatform @default(UNKNOWN)
+  appVersion String?        @map("app_version") @db.VarChar(32)
 
   /// Captured SERVER-side from the request, unlike the fields above.
   userAgent String? @map("user_agent") @db.VarChar(512)
@@ -764,7 +764,7 @@ model Address {
 
   /// Cached result of the last serviceability check. Advisory only: the
   /// authoritative check runs at quote time (BR-504), because zones change.
-  isServiceable   Boolean?  @map("is_serviceable")
+  isServiceable    Boolean?  @map("is_serviceable")
   serviceCheckedAt DateTime? @map("service_checked_at") @db.Timestamptz(6)
 
   /// Soft delete. Never a hard delete (docs/08 §5).
@@ -939,10 +939,10 @@ model DriverProfile {
   /// NOT ENCRYPTED YET - there is no key-management decision, and inventing one
   /// here would be worse than recording the gap. Redacted from logs, excluded
   /// from list projections, and tracked as debt. See OQ-27.
-  licenseNumber String?   @map("license_number") @db.VarChar(64)
-  licenseExpiry DateTime? @map("license_expiry") @db.Date
+  licenseNumber      String?   @map("license_number") @db.VarChar(64)
+  licenseExpiry      DateTime? @map("license_expiry") @db.Date
   /// Object storage key, never bytes (docs/08 §12.4).
-  licenseDocumentKey String? @map("license_document_key") @db.VarChar(512)
+  licenseDocumentKey String?   @map("license_document_key") @db.VarChar(512)
 
   profileImageKey String? @map("profile_image_key") @db.VarChar(512)
 
@@ -972,8 +972,9 @@ model DriverProfile {
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  assignments VehicleAssignment[]
-  shifts      DriverShift[]
+  assignments      VehicleAssignment[]
+  shifts           DriverShift[]
+  dispatchDeclines DispatchDecline[]
 
   /// The compliance sweep looks for licences expiring soon (BR-304).
   @@index([employmentStatus, licenseExpiry])
@@ -1038,12 +1039,12 @@ model Vehicle {
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  inventory     VehicleInventory?
-  assignments   VehicleAssignment[]
-  shifts        DriverShift[]
-  meterReadings MeterReading[]
-  adjustments   InventoryAdjustment[]
-  reservations  FuelReservation[]
+  inventory         VehicleInventory?
+  assignments       VehicleAssignment[]
+  shifts            DriverShift[]
+  meterReadings     MeterReading[]
+  adjustments       InventoryAdjustment[]
+  reservations      FuelReservation[]
   iotAuthorizations IotDispenseAuthorization[]
 
   @@index([status])
@@ -1078,9 +1079,9 @@ model VehicleInventory {
   heldQuantity Decimal @default(0) @map("held_quantity") @db.Decimal(12, 3)
 
   /// BR-409: how the figure was established, and when it stops being trusted.
-  lastSource      FuelStockSource @default(MANUAL) @map("last_source")
-  lastVerifiedAt  DateTime?       @map("last_verified_at") @db.Timestamptz(6)
-  staleAfter      DateTime?       @map("stale_after") @db.Timestamptz(6)
+  lastSource     FuelStockSource @default(MANUAL) @map("last_source")
+  lastVerifiedAt DateTime?       @map("last_verified_at") @db.Timestamptz(6)
+  staleAfter     DateTime?       @map("stale_after") @db.Timestamptz(6)
 
   /// Optimistic-concurrency guard for the cached quantity.
   version BigInt @default(0)
@@ -1120,10 +1121,10 @@ model InventoryAdjustment {
   reason     String? @db.VarChar(1000)
 
   // --- Refill detail (BR-410) ---
-  depotName    String?   @map("depot_name") @db.VarChar(160)
-  invoiceRef   String?   @map("invoice_ref") @db.VarChar(64)
-  photoKey     String?   @map("photo_key") @db.VarChar(512)
-  occurredAt   DateTime? @map("occurred_at") @db.Timestamptz(6)
+  depotName  String?   @map("depot_name") @db.VarChar(160)
+  invoiceRef String?   @map("invoice_ref") @db.VarChar(64)
+  photoKey   String?   @map("photo_key") @db.VarChar(512)
+  occurredAt DateTime? @map("occurred_at") @db.Timestamptz(6)
 
   /// Who did it. Never null: an adjustment with no actor cannot be audited.
   performedByUserId String @map("performed_by_user_id") @db.Uuid
@@ -1148,7 +1149,7 @@ model VehicleAssignment {
   driverProfileId String        @map("driver_profile_id") @db.Uuid
   driverProfile   DriverProfile @relation(fields: [driverProfileId], references: [id], onDelete: Cascade)
 
-  assignedAt      DateTime  @default(now()) @map("assigned_at") @db.Timestamptz(6)
+  assignedAt       DateTime @default(now()) @map("assigned_at") @db.Timestamptz(6)
   assignedByUserId String   @map("assigned_by_user_id") @db.Uuid
 
   /// Null while active. Partial unique indexes on this column enforce "one
@@ -1199,8 +1200,8 @@ model DriverShift {
   /// PLACEHOLDER for the last known position (BR-309: only while on shift).
   /// There is no live GPS ingest in this phase; the hot path will be
   /// cache-first with a batched flush, not a column update per ping.
-  lastLatitude  Decimal?  @map("last_latitude") @db.Decimal(10, 7)
-  lastLongitude Decimal?  @map("last_longitude") @db.Decimal(10, 7)
+  lastLatitude   Decimal?  @map("last_latitude") @db.Decimal(10, 7)
+  lastLongitude  Decimal?  @map("last_longitude") @db.Decimal(10, 7)
   lastLocationAt DateTime? @map("last_location_at") @db.Timestamptz(6)
 
   startedByUserId String? @map("started_by_user_id") @db.Uuid
@@ -1728,17 +1729,12 @@ model Order {
   /// most SCHEDULE_MAX_DAYS). Informs drivers; it does not delay dispatch.
   scheduledFor DateTime? @map("scheduled_for") @db.Timestamptz(6)
 
-  placedAt  DateTime  @default(now()) @map("placed_at") @db.Timestamptz(6)
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  placedAt  DateTime @default(now()) @map("placed_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  statusEvents OrderStatusEvent[]
-  reservations FuelReservation[]
-
-  /// A customer's own order list, newest first (docs/08 §10.2).
-  @@index([userId, createdAt])
-  /// A company's orders.
-  @@index([corporateAccountId, createdAt])
+  statusEvents  OrderStatusEvent[]
+  reservations  FuelReservation[]
   /// The dispatch board. A partial index on the non-terminal subset is added
   /// in raw SQL - Prisma cannot express one, and open orders are a tiny and
   /// permanently tiny fraction of a table that grows without bound.
@@ -1748,6 +1744,13 @@ model Order {
   /// IoT pump unlock attempts (smarttracker authorize API).
   iotAuthorizations IotDispenseAuthorization[]
 
+  /// Drivers who rejected this order from Nearby requests.
+  dispatchDeclines DispatchDecline[]
+
+  /// A customer's own order list, newest first (docs/08 §10.2).
+  @@index([userId, createdAt])
+  /// A company's orders.
+  @@index([corporateAccountId, createdAt])
   @@index([status, statusChangedAt])
   @@index([expiresAt])
   @@map("orders")
@@ -1779,10 +1782,10 @@ model OrderStatusEvent {
   fromStatus OrderStatus? @map("from_status")
   toStatus   OrderStatus  @map("to_status")
 
-  actorKind ActorKind @map("actor_kind")
+  actorKind   ActorKind @map("actor_kind")
   /// NULL exactly when actorKind is SYSTEM. Enforced by a CHECK constraint:
   /// a human transition with no human attached is not auditable.
-  actorUserId String? @map("actor_user_id") @db.Uuid
+  actorUserId String?   @map("actor_user_id") @db.Uuid
 
   /// Why. Free text for humans, and never optional in practice - the transition
   /// service supplies the table's stated reason when the caller gives none.
@@ -1832,10 +1835,10 @@ model FuelReservation {
   expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
 
   /// Set when status leaves HELD.
-  releasedAt     DateTime? @map("released_at") @db.Timestamptz(6)
+  releasedAt    DateTime? @map("released_at") @db.Timestamptz(6)
   /// From RESERVATION_RELEASE_REASON. docs/08 §1.2 names "why this reservation
   /// was released" as a question only a history record can answer.
-  releaseReason  String?   @map("release_reason") @db.VarChar(64)
+  releaseReason String?   @map("release_reason") @db.VarChar(64)
 
   /// The actual quantity taken, set when the reservation is consumed. Differs
   /// from `quantity` whenever delivery was partial or over (BR-408).
@@ -1892,6 +1895,22 @@ model IotDispenseAuthorization {
 
   @@index([orderId, createdAt])
   @@map("iot_dispense_authorizations")
+}
+
+/// A driver passed on an open order (Nearby requests → Reject). The order is
+/// hidden from that driver only; everyone else can still accept it.
+model DispatchDecline {
+  orderId String @map("order_id") @db.Uuid
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  driverProfileId String        @map("driver_profile_id") @db.Uuid
+  driverProfile   DriverProfile @relation(fields: [driverProfileId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@id([orderId, driverProfileId])
+  @@index([driverProfileId])
+  @@map("dispatch_declines")
 }
 
 // ---------------------------------------------------------------------------
