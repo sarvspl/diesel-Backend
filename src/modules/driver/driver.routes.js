@@ -123,6 +123,14 @@ router.post(
   controller.acceptRequest
 );
 
+// Skip a request: hidden for this driver only, still open for the others.
+router.post(
+  '/requests/:id/decline',
+  requirePermission(PERMISSIONS.DELIVERY_EXECUTE),
+  validate(orderIdSchema),
+  controller.declineRequest
+);
+
 // --- Orders ----------------------------------------------------------------
 
 router.get(

@@ -53,6 +53,30 @@ const OPEN_STATUSES = [ORDER_STATUS.CONFIRMED, ORDER_STATUS.ALLOCATION_FAILED];
 /** How many open orders are scanned for distance. Plenty at current volume. */
 const SCAN_LIMIT = 300;
 
+/** Cancellation reason when nobody accepts in time. The customer app keys off SYSTEM. */
+export const NO_DRIVER_REASON = 'No driver accepted the order in time';
+
+/**
+ * When an open order stops being offered. Order-now: DISPATCH_SEARCH_MINUTES
+ * after it became open (placed, or handed back by a driver). Scheduled: its
+ * delivery time.
+ */
+export const searchDeadlineOf = (order) =>
+  order.scheduledFor
+    ? new Date(order.scheduledFor)
+    : new Date(new Date(order.statusChangedAt).getTime() + env.DISPATCH_SEARCH_MINUTES * 60_000);
+
+/**
+ * Drivers who passed on an order, so it leaves only their list.
+ *
+ * In memory on purpose: an open order lives minutes, and losing the list on a
+ * restart only means a driver sees a request they skipped once more. Backend
+ * runs as a single pm2 process.
+ */
+const declined = new Map(); // orderId -> Set<driverProfileId>
+
+const forgetDeclines = (orderId) => declined.delete(orderId);
+
 const distanceKm = (lat1, lng1, lat2, lng2) => {
   const R = 6371;
   const toRad = (d) => (d * Math.PI) / 180;
@@ -143,14 +167,20 @@ export const listNearbyRequests = async ({ userId, latitude, longitude }) => {
       productSnapshot: true,
       scheduledFor: true,
       placedAt: true,
+      statusChangedAt: true,
     },
     orderBy: { placedAt: 'asc' },
     take: SCAN_LIMIT,
   });
 
   const requests = [];
+  const now = Date.now();
 
   for (const order of candidates) {
+    // Past its search window (the sweep will cancel it) or skipped by this driver.
+    if (searchDeadlineOf(order).getTime() <= now) continue;
+    if (declined.get(order.id)?.has(driver.id)) continue;
+
     const lat = Number(order.addressSnapshot?.latitude);
     const lng = Number(order.addressSnapshot?.longitude);
 
@@ -203,6 +233,8 @@ export const acceptRequest = async ({ userId, orderId, requestId }) => {
       id: true,
       status: true,
       quantity: true,
+      scheduledFor: true,
+      statusChangedAt: true,
       reservations: {
         where: { status: RESERVATION_STATUS.HELD },
         select: { id: true, vehicleId: true },
@@ -216,6 +248,12 @@ export const acceptRequest = async ({ userId, orderId, requestId }) => {
 
   if (!OPEN_STATUSES.includes(order.status)) {
     throw new ConflictError('Another driver has already taken this order', {
+      code: ERROR_CODES.ORDER_ALREADY_TAKEN,
+    });
+  }
+
+  if (searchDeadlineOf(order).getTime() <= Date.now()) {
+    throw new ConflictError('This request has expired', {
       code: ERROR_CODES.ORDER_ALREADY_TAKEN,
     });
   }
@@ -304,6 +342,7 @@ export const acceptRequest = async ({ userId, orderId, requestId }) => {
     requestId,
   });
 
+  forgetDeclines(orderId);
   log.info({ orderId, vehicleId, driverUserId: userId }, 'order accepted by driver');
 
   return driverOrderRepository
@@ -386,5 +425,60 @@ export const rejectOrder = async ({ userId, orderId, reason, requestId }) => {
     requestId,
   });
 
+  // The driver who handed it back should not be offered it again.
+  if (!declined.has(orderId)) declined.set(orderId, new Set());
+  declined.get(orderId).add(driver.id);
+
   log.info({ orderId, driverUserId: userId }, 'order handed back by driver');
+};
+
+/**
+ * Skip a nearby request: it leaves this driver's list only. The order stays
+ * open for every other driver until someone accepts or the search lapses.
+ */
+export const declineRequest = async ({ userId, orderId }) => {
+  const driver = await resolveDriverProfile(userId);
+
+  if (!declined.has(orderId)) declined.set(orderId, new Set());
+  declined.get(orderId).add(driver.id);
+
+  log.info({ orderId, driverUserId: userId }, 'nearby request declined by driver');
+};
+
+/**
+ * Cancel open orders nobody accepted within their search window, releasing the
+ * fuel hold (the transition does that). Runs on a timer from server.js.
+ */
+export const expireUnacceptedOrders = async () => {
+  const open = await prisma.order.findMany({
+    where: { status: { in: OPEN_STATUSES } },
+    select: { id: true, status: true, scheduledFor: true, statusChangedAt: true },
+    take: SCAN_LIMIT,
+  });
+
+  const now = Date.now();
+  let cancelled = 0;
+
+  for (const order of open) {
+    if (searchDeadlineOf(order).getTime() > now) continue;
+
+    try {
+      await transitionOrder({
+        orderId: order.id,
+        toStatus: ORDER_STATUS.CANCELLED_BY_ADMIN,
+        actorKind: ACTOR_KIND.SYSTEM,
+        reason: NO_DRIVER_REASON,
+        expectedStatus: order.status,
+      });
+      forgetDeclines(order.id);
+      cancelled += 1;
+    } catch (error) {
+      // Accepted in the same instant, most likely. Next sweep re-checks.
+      log.warn({ err: error, orderId: order.id }, 'could not lapse an unaccepted order');
+    }
+  }
+
+  if (cancelled > 0) log.info({ cancelled }, 'unaccepted orders lapsed');
+
+  return { cancelled };
 };

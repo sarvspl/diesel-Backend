@@ -214,6 +214,10 @@ const envSchema = z
     // Drivers see CONFIRMED orders within this straight-line radius of where
     // their phone is, and the first to accept gets it.
     DISPATCH_NEARBY_RADIUS_KM: z.coerce.number().min(1).max(500).default(25),
+    // An order-now that no driver accepts within this long is cancelled
+    // (SYSTEM) and its fuel hold released; the customer app offers to order
+    // again. Scheduled orders lapse at their delivery time instead.
+    DISPATCH_SEARCH_MINUTES: z.coerce.number().int().min(1).max(120).default(5),
 
     // --- Scheduled delivery -------------------------------------------------
     // A scheduled order must be at least this far ahead (time for a tanker to

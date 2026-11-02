@@ -1,3 +1,4 @@
+import { env } from '../../../config/env.js';
 import { toMoneyString, toQuantityString } from '../../../shared/utils/money.js';
 
 /**
@@ -103,7 +104,20 @@ export const toPublicOrder = (order) => ({
         reason: order.cancellationReason,
       }
     : null,
+
+  /**
+   * While waiting for a driver: when the search gives up (the order is then
+   * cancelled by SYSTEM). Same rule as driver-dispatch.service.js
+   * `searchDeadlineOf`; null once a driver has it.
+   */
+  searchExpiresAt: SEARCHING_STATUSES.includes(order.status)
+    ? order.scheduledFor
+      ? new Date(order.scheduledFor)
+      : new Date(new Date(order.statusChangedAt).getTime() + env.DISPATCH_SEARCH_MINUTES * 60_000)
+    : null,
 });
+
+const SEARCHING_STATUSES = ['CONFIRMED', 'ALLOCATION_FAILED'];
 
 /**
  * The operations view.

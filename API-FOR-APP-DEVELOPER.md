@@ -365,8 +365,12 @@ Poll every ~20 s while the order is `ASSIGNED`, `EN_ROUTE`, `ARRIVED` or `DISPEN
   deliveryAddress:{nickname,line1,line2,landmark,city,state,pincode,contactName,contactPhone},
   deliveryInstructions,
   breakdown:{lines,totals},
-  cancellation:{cancelledAt,cancelledBy,reason} | null }
+  cancellation:{cancelledAt,cancelledBy,reason} | null,
+  searchExpiresAt }   // while CONFIRMED/ALLOCATION_FAILED: when the driver search gives up; else null
 ```
+**No driver found.** An order-now nobody accepts within 5 minutes (server `DISPATCH_SEARCH_MINUTES`)
+is cancelled automatically: `status: CANCELLED_BY_ADMIN`, `cancellation.cancelledBy: "SYSTEM"`, fuel hold released.
+Show "No driver available" with an **Order again** button. A scheduled order lapses the same way at its `scheduledFor`.
 (List responses return a lighter summary of the same fields plus `city`.)
 
 ---
@@ -436,6 +440,9 @@ as `ASSIGNED`, and the delivery sequence (§4.6) continues as normal.
 
   **Online only — do not queue `accept` in an offline outbox.** It is a race against
   other drivers; an accept replayed later is meaningless.
+- `POST /driver/requests/:id/decline` — no body. Skips the request for THIS driver only; it stays
+  open for other drivers. `200`. Remove it from the list.
+  Expired requests (past their search window) are no longer listed; accepting one returns `409 ORDER_ALREADY_TAKEN`.
 
 ### 4.3a Hand an accepted order back — `POST /driver/orders/:id/reject`
 Body `{ "reason"?: "…" }`. Only while the order is `ASSIGNED` (trip not started) →

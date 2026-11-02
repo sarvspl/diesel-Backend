@@ -2,6 +2,7 @@ import { createApp, API_V1_PREFIX } from './app.js';
 import { env, isProduction } from './config/env.js';
 import { findPendingMigrations } from './infrastructure/database/migration-status.js';
 import { connectDatabase, disconnectDatabase } from './infrastructure/database/prisma.js';
+import { expireUnacceptedOrders } from './modules/driver/services/driver-dispatch.service.js';
 import { beginShutdown } from './shared/lifecycle.js';
 import { logger } from './shared/logger/index.js';
 
@@ -67,6 +68,12 @@ const start = async () => {
   // client sees a spurious 502.
   server.keepAliveTimeout = 65_000;
   server.headersTimeout = 66_000;
+
+  // Orders no driver accepted in time are cancelled and their fuel released.
+  // Single pm2 process, so one timer; unref'd so it never holds shutdown.
+  setInterval(() => {
+    expireUnacceptedOrders().catch((err) => logger.error({ err }, 'unaccepted-order sweep failed'));
+  }, 30_000).unref();
 };
 
 /**

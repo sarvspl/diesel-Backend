@@ -247,6 +247,16 @@ export const acceptRequest = async (req, res) => {
   return sendSuccess(res, { message: 'Order accepted', data: { order: toDriverOrder(order) } });
 };
 
+/** POST /api/v1/driver/requests/:id/decline */
+export const declineRequest = async (req, res) => {
+  await dispatchService.declineRequest({
+    userId: req.auth.userId,
+    orderId: req.validated.params.id,
+  });
+
+  return sendSuccess(res, { message: 'Request skipped', data: {} });
+};
+
 /** POST /api/v1/driver/orders/:id/iot-authorize */
 export const iotAuthorize = async (req, res) => {
   const authorization = await iotDispenseService.authorizeDispense({
