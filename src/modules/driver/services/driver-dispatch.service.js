@@ -175,14 +175,21 @@ export const listNearbyRequests = async ({ userId, latitude, longitude }) => {
 
   const requests = [];
   const now = Date.now();
-  const declinedIds = new Set(
-    (
-      await prisma.dispatchDecline.findMany({
-        where: { driverProfileId: driver.id, orderId: { in: candidates.map((o) => o.id) } },
-        select: { orderId: true },
-      })
-    ).map((d) => d.orderId)
-  );
+  // A missing dispatch_declines table (migration not applied) must not take
+  // the whole list down: show everything and say why in the log.
+  let declines = [];
+  try {
+    declines = await prisma.dispatchDecline.findMany({
+      where: { driverProfileId: driver.id, orderId: { in: candidates.map((o) => o.id) } },
+      select: { orderId: true },
+    });
+  } catch (err) {
+    log.error(
+      { err },
+      'could not read dispatch declines - run `npx prisma migrate deploy` and `npm run build`'
+    );
+  }
+  const declinedIds = new Set(declines.map((d) => d.orderId));
 
   for (const order of candidates) {
     // Past its search window (the sweep will cancel it) or skipped by this driver.
