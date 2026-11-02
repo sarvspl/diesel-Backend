@@ -263,7 +263,15 @@ export const updatePriceStatus = async ({ id, actorUserId, status, actorPermissi
     return toPublicPrice(activated);
   }
 
-  const updated = await pricingRepository.updatePriceStatus({ id, status });
+  // Removing a live price ends it now (history keeps when it applied).
+  // Quotes already issued keep their frozen price; only new quotes are affected.
+  const updated = await pricingRepository.updatePriceStatus({
+    id,
+    status,
+    ...(status === PRICE_STATUS.CANCELLED && price.status === PRICE_STATUS.ACTIVE
+      ? { effectiveUntil: new Date() }
+      : {}),
+  });
 
   log.info({ priceId: id, status, actorUserId }, 'price status changed');
 
